@@ -76,6 +76,7 @@ export class PetController {
   private isDraggingWindow = false;
   private dragAnimTimer: number | null = null;
   private walkRequestId = 0;
+  private currentPlayingAnimation: string | null = null;
 
   private lastShownDialogue = "";
 
@@ -129,8 +130,9 @@ export class PetController {
         // 方向改变时立即切换动画
         this.updateManualDragDirection(dir);
       },
-      () => {
-        // 持续同方向移动：只重置停止回退计时器，不重新从第0帧播放
+      (dir) => {
+        // 持续同方向移动：如果当前未处于对应的方向动画，强制切换
+        this.updateManualDragDirection(dir);
         this.armDraggedIdleFallback();
       }
     );
@@ -190,6 +192,7 @@ export class PetController {
       },
       onPressVisualStart: () => {
         this.player.play('dragged');
+        this.currentPlayingAnimation = 'dragged';
       },
       onPressVisualCancel: () => {
         const currentState = this.stateMachine.getState();
@@ -685,6 +688,7 @@ export class PetController {
         }
       }
     });
+    this.currentPlayingAnimation = animName;
   }
   
   private playStateAnimation(state: PetState) {
@@ -696,6 +700,7 @@ export class PetController {
         }
       }
     });
+    this.currentPlayingAnimation = state;
     
     if (state === 'idle') {
         this.scheduleNextBehavior();
@@ -822,6 +827,7 @@ export class PetController {
           }
         }
       });
+      this.currentPlayingAnimation = res.animation;
 
       const duration = command.reason === 'test' 
           ? 3000
@@ -929,12 +935,19 @@ export class PetController {
     const source = this.loader.getCharacterSource();
     const res = resolveDirectionalAnimation(source, direction, (name) => this.player.hasAnimation(name));
 
+    // 如果当前正在播放的已经是我们所期望的方向动画，且朝向相同，就不要重复 play()
+    if (this.currentPlayingAnimation === res.animation && this.facingController.getFacing() === res.facing) {
+      return;
+    }
+
     this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
     this.player.setFacing?.(res.facing);
     this.player.play(res.animation, {
       loop: true,
       speedMultiplier: this.settings.animationSpeedMultiplier
     });
+    this.currentPlayingAnimation = res.animation;
+
     // 方向切换时清除已有的回退计时器，但不重新 arm
     // 只有 onMovementActivity（即窗口实际移动事件）才重新 arm 计时器
     if (this.dragAnimTimer !== null) {
@@ -961,6 +974,7 @@ export class PetController {
           loop: true,
           speedMultiplier: this.settings.animationSpeedMultiplier
         });
+        this.currentPlayingAnimation = 'dragged';
       }
       this.dragAnimTimer = null;
     }, 600); // 600ms：给 onMoved 事件更充裕的时间重置计时器
