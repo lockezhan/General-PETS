@@ -105,27 +105,16 @@ export class PetController {
     this.motionController = new MotionController();
     this.behaviorScheduler = new BehaviorScheduler(this.handleAutonomousBehavior.bind(this));
 
-    this.dragDirectionTracker = new DragDirectionTracker((dir) => {
-      if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
-        const config = this.getMotionConfig();
-        const source = this.loader.getCharacterSource();
-        const res = resolveDirectionalAnimation(source, dir, (name) => this.player.hasAnimation(name));
-        this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
-        this.player.setFacing?.(res.facing);
-        this.player.play(res.animation);
-
-        void this.startDraggedWalk(dir);
-
-        // 清除旧定时器；只有停止移动 500ms 后才回退到 dragged 待机动画
-        if (this.dragAnimTimer) clearTimeout(this.dragAnimTimer);
-        this.dragAnimTimer = window.setTimeout(() => {
-          if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
-            this.player.play('dragged');
-          }
-          this.dragAnimTimer = null;
-        }, 500);
+    this.dragDirectionTracker = new DragDirectionTracker(
+      (dir) => {
+        // 方向改变时立即切换动画
+        this.updateManualDragDirection(dir);
+      },
+      () => {
+        // 持续同方向移动：只重置停止回退计时器，不重新从第0帧播放
+        this.armDraggedIdleFallback();
       }
-    });
+    );
 
     const interactionCallbacks: InteractionControllerCallbacks = {
       playAnimation: (animName: string, fallback?: string) => {
@@ -160,14 +149,14 @@ export class PetController {
       getFacing: () => {
         return this.facingController.getFacing();
       },
-      onDragStart: () => {
+      onDragStart: (initialDirection) => {
         this.clearTimers();
         this.behaviorScheduler.cancel("drag started");
         this.motionController.cancelActiveMotion("drag started");
         this.trySetState('dragged');
         
         this.isDraggingWindow = true;
-        this.dragDirectionTracker.startDrag(null);
+        this.dragDirectionTracker.startDrag(initialDirection);
       },
       onDragEnd: () => {
         this.isDraggingWindow = false;
@@ -229,11 +218,14 @@ export class PetController {
       await this.applySettings(e.payload);
     });
     
-    listen<{ direction: 'left' | 'right' }>(EVENT_TEST_WALK, (event) => {
+    listen<{ direction?: unknown }>(EVENT_TEST_WALK, (event) => {
         console.log("[pet-controller] received EVENT_TEST_WALK:", event.payload);
-        const payload = event.payload || {};
-        const dir = payload.direction || (Math.random() > 0.5 ? "left" : "right");
-        this.startWalk({ reason: 'test', direction: dir });
+        const direction = event.payload?.direction;
+        if (direction !== "left" && direction !== "right") {
+          console.warn("[test-walk] invalid direction, ignoring:", direction);
+          return;
+        }
+        this.startWalk({ reason: 'test', direction });
     });
     
     listen(EVENT_TEST_FALL, async () => {
@@ -730,7 +722,8 @@ export class PetController {
       const floorInfo = await this.floorController.getCurrentFloorInfo();
       if (!floorInfo) return;
 
-      if (!this.trySetState("walk")) return;
+      // 先状态机切状态（不触发 playStateAnimation，避免先播旧方向动画）
+      if (!this.stateMachine.setState("walk")) return;
 
       const dir = command.direction;
       const source = this.loader.getCharacterSource();
@@ -738,7 +731,15 @@ export class PetController {
       const res = resolveDirectionalAnimation(source, dir, (name) => this.player.hasAnimation(name));
       this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
       this.player.setFacing?.(res.facing);
-      this.player.play(res.animation);
+      this.player.play(res.animation, {
+        loop: true,
+        speedMultiplier: this.settings.animationSpeedMultiplier,
+        onComplete: (nextState) => {
+          if (this.stateMachine.getState() === 'walk') {
+            this.trySetState(nextState as PetState);
+          }
+        }
+      });
 
       const duration = command.reason === 'test' 
           ? 3000
@@ -764,37 +765,55 @@ export class PetController {
       );
   }
 
-  private async startDraggedWalk(direction: 'left' | 'right') {
+  /**
+   * 手动拖动时更新方向动画。
+   * 不调用 MotionController — Windows startDragging() 已经控制窗口位置。
+   * 注意：此处不调用 armDraggedIdleFallback()，
+   * 改为仅在 onMovementActivity（onMoved 窗口事件触发）时才重置计时器。
+   * 这样即使 Tauri 原生拖动期间 onMoved 未及时触发，方向动画也会持续播放。
+   */
+  private updateManualDragDirection(direction: 'left' | 'right') {
     if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
 
     const config = this.getMotionConfig();
-    const floorInfo = await this.floorController.getCurrentFloorInfo();
-    if (!floorInfo) return;
-
     const source = this.loader.getCharacterSource();
     const res = resolveDirectionalAnimation(source, direction, (name) => this.player.hasAnimation(name));
 
     this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
     this.player.setFacing?.(res.facing);
-    this.player.play(res.animation);
+    this.player.play(res.animation, {
+      loop: true,
+      speedMultiplier: this.settings.animationSpeedMultiplier
+    });
+    // 方向切换时清除已有的回退计时器，但不重新 arm
+    // 只有 onMovementActivity（即窗口实际移动事件）才重新 arm 计时器
+    if (this.dragAnimTimer !== null) {
+      clearTimeout(this.dragAnimTimer);
+      this.dragAnimTimer = null;
+    }
+  }
 
-    await this.motionController.startWalk(
-      config.walkSpeed,
-      direction,
-      Number.POSITIVE_INFINITY,
-      floorInfo,
-      this.settings,
-      () => {
-        if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
-          this.motionController.cancelActiveMotion('drag edge reached');
-        }
-      },
-      () => {
-        if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
-          this.motionController.cancelActiveMotion('drag walk completed');
-        }
+  /**
+   * 设置「停止移动后回退到 dragged 动画」的定时器。
+   * 仅在 onMovementActivity 回调中调用（即 Tauri onMoved 窗口事件触发时）。
+   * 不在方向切换时调用，避免 onMoved 稀疏时动画被提前中断。
+   */
+  private armDraggedIdleFallback() {
+    if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
+
+    if (this.dragAnimTimer !== null) {
+      clearTimeout(this.dragAnimTimer);
+    }
+
+    this.dragAnimTimer = window.setTimeout(() => {
+      if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
+        this.player.play('dragged', {
+          loop: true,
+          speedMultiplier: this.settings.animationSpeedMultiplier
+        });
       }
-    );
+      this.dragAnimTimer = null;
+    }, 600); // 600ms：给 onMoved 事件更充裕的时间重置计时器
   }
 
   private async handleDragRelease() {

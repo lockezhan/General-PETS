@@ -21,12 +21,17 @@ export class DragDirectionTracker {
 
   private unlistenFn: (() => void) | null = null;
   private onDirectionChange: (direction: HorizontalDirection) => void;
+  private onMovementActivity: (direction: HorizontalDirection) => void;
 
   private readonly DRAG_DIRECTION_THRESHOLD_PHYSICAL_PX = 3;
   private readonly DRAG_DIRECTION_DEBOUNCE_MS = 60;
 
-  constructor(onDirectionChange: (direction: HorizontalDirection) => void) {
+  constructor(
+    onDirectionChange: (direction: HorizontalDirection) => void,
+    onMovementActivity: (direction: HorizontalDirection) => void = () => {}
+  ) {
     this.onDirectionChange = onDirectionChange;
+    this.onMovementActivity = onMovementActivity;
     this.initListener().catch(console.error);
   }
 
@@ -78,11 +83,17 @@ export class DragDirectionTracker {
     }
 
     const candidateDirection: HorizontalDirection = deltaX > 0 ? "right" : "left";
+
+    // 每次有效移动都通知活动回调（用于重置停止计时器）
+    this.onMovementActivity(candidateDirection);
+
     const now = performance.now();
 
     if (this.state.currentDirection === candidateDirection) {
+      // 同方向：重置防抖计数
       this.state.stableSamples = 0;
     } else {
+      // 候选方向改变：防抖后才切换
       this.state.stableSamples++;
       const timeSinceChange = now - this.state.lastChangedAt;
 

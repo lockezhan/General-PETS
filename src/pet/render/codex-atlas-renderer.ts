@@ -12,6 +12,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   private clock: AnimationClock;
 
   private currentAnimation = 'idle';
+  private currentMappedAnimation: CodexV1AnimationName = 'idle';
   private currentConfig: typeof CODEX_BASE_ANIMATIONS[keyof typeof CODEX_BASE_ANIMATIONS] | null = null;
   private facing: 'left' | 'right' = 'right';
 
@@ -129,6 +130,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.clock.stop();
 
     this.currentAnimation = name;
+    this.currentMappedAnimation = mapped; // 保存已解析后的 Codex 动画名，供 renderFrame() 判断方向
     this.currentConfig = config;
     this.onCompleteCallback = options?.onComplete || null;
     this.loopEnabled = options?.loop !== undefined ? options.loop : defaultTiming.loop;
@@ -221,8 +223,10 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     const sourceY = row * contract.frameHeight;
     this.element.style.transform = `translate(${-sourceX * scaleX}px, ${-sourceY * scaleY}px)`;
 
-    const mapped = this.adapter.animationMapping[this.currentAnimation as keyof typeof this.adapter.animationMapping];
-    const isDirectionalWalk = mapped === 'running-left' || mapped === 'running-right';
+    // 使用 play() 时已解析的 mapped 名，避免重复映射（currentAnimation 保存的是逻辑名 running-left 而非映射键 walkLeft）
+    const isDirectionalWalk =
+      this.currentMappedAnimation === 'running-left' ||
+      this.currentMappedAnimation === 'running-right';
 
     if (this.facing === 'left' && !isDirectionalWalk) {
       this.viewport.style.transform = 'scaleX(-1)';

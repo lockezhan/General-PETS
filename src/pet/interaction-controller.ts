@@ -15,7 +15,7 @@ export interface InteractionControllerCallbacks {
   getRandomDialogueFromGroup: (group: string) => string | null;
   getCurrentState: () => string;
   getFacing: () => "left" | "right";
-  onDragStart: () => void;
+  onDragStart: (initialDirection: "left" | "right" | null) => void;
   onDragEnd: () => void;
 }
 
@@ -108,16 +108,9 @@ export class InteractionController {
           this.executeFallback(event);
         }
       },
-      onDragStart: (areaId) => {
-        const currentState = this.callbacks.getCurrentState();
-        if (currentState === 'falling' || currentState === 'landing') {
-          // Allow dragging to take over during falling/landing
-          this.callbacks.onDragStart();
-        } else {
-          // Regular drag start
-          this.callbacks.onDragStart();
-        }
-        this.debugOverlay.updateEventInfo("dragStart", `area:${areaId}`);
+      onDragStart: (areaId, initialDirection) => {
+        this.callbacks.onDragStart(initialDirection);
+        this.debugOverlay.updateEventInfo("dragStart", `area:${areaId};direction:${initialDirection ?? "vertical"}`);
       },
       onDragEnd: (areaId) => {
         this.callbacks.onDragEnd();

@@ -9,7 +9,7 @@ const RAPID_CLICK_THRESHOLD = 5;
 
 export interface RecognizerCallbacks {
   onEvent: (event: InteractionEventType, areaId: string | null, clientX: number, clientY: number) => void;
-  onDragStart: (areaId: string | null) => void;
+  onDragStart: (areaId: string | null, initialDirection: "left" | "right" | null) => void;
   onDragEnd: (areaId: string | null) => void;
   findArea: (clientX: number, clientY: number) => { id: string; draggable?: boolean } | null;
   isEnabled: () => boolean;
@@ -107,10 +107,9 @@ export class InteractionRecognizer {
   private handlePointerMove = async (e: PointerEvent) => {
     if (!this.session || this.session.cancelled) return;
 
-    const distance = Math.hypot(
-      e.screenX - this.session.startScreenX,
-      e.screenY - this.session.startScreenY
-    );
+    const deltaX = e.screenX - this.session.startScreenX;
+    const deltaY = e.screenY - this.session.startScreenY;
+    const distance = Math.hypot(deltaX, deltaY);
 
     if (distance >= DRAG_THRESHOLD_PX) {
       this.clearLongPressTimer();
@@ -120,8 +119,14 @@ export class InteractionRecognizer {
         if (!this.session.dragging && !this.session.nativeDragRequested) {
           this.session.dragging = true;
           this.session.nativeDragRequested = true;
-          
-          this.callbacks.onDragStart(this.session.areaId);
+
+          // 计算初始左右方向：水平分量 >= 垂直分量 且超过阈値才判定
+          let initialDirection: "left" | "right" | null = null;
+          if (Math.abs(deltaX) >= Math.abs(deltaY) && Math.abs(deltaX) >= DRAG_THRESHOLD_PX) {
+            initialDirection = deltaX < 0 ? "left" : "right";
+          }
+
+          this.callbacks.onDragStart(this.session.areaId, initialDirection);
 
           try {
             await getCurrentWindow().startDragging();
