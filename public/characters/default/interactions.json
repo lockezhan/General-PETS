@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+
+  "hitAreas": [
+    {
+      "id": "head",
+      "name": "头部",
+      "shape": "ellipse",
+      "cx": 0.5,
+      "cy": 0.28,
+      "rx": 0.32,
+      "ry": 0.22,
+      "priority": 30,
+      "draggable": true
+    },
+    {
+      "id": "face",
+      "name": "脸部",
+      "shape": "ellipse",
+      "cx": 0.5,
+      "cy": 0.42,
+      "rx": 0.2,
+      "ry": 0.14,
+      "priority": 40,
+      "draggable": true
+    },
+    {
+      "id": "body",
+      "name": "身体",
+      "shape": "ellipse",
+      "cx": 0.5,
+      "cy": 0.68,
+      "rx": 0.38,
+      "ry": 0.28,
+      "priority": 20,
+      "draggable": true
+    },
+    {
+      "id": "feet",
+      "name": "脚部",
+      "shape": "polygon",
+      "points": [
+        [0.28, 0.84],
+        [0.72, 0.84],
+        [0.78, 0.98],
+        [0.22, 0.98]
+      ],
+      "priority": 10,
+      "draggable": true
+    }
+  ],
+
+  "rules": [
+    {
+      "id": "head-single-happy",
+      "event": "singleClick",
+      "area": "head",
+      "states": ["idle", "sit", "walk"],
+      "priority": 50,
+      "weight": 70,
+      "cooldownMs": 2500,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "happy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "headTouch" },
+        { "type": "resetBehaviorTimer" }
+      ]
+    },
+    {
+      "id": "head-single-shy",
+      "event": "singleClick",
+      "area": "head",
+      "states": ["idle", "sit"],
+      "priority": 50,
+      "weight": 30,
+      "cooldownMs": 5000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "shy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "headTouchShy" }
+      ]
+    },
+    {
+      "id": "face-rapid-angry",
+      "event": "rapidClick",
+      "area": "face",
+      "states": ["idle", "sit", "walk"],
+      "priority": 100,
+      "weight": 100,
+      "cooldownMs": 3000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "angry", "fallback": "idle" },
+        { "type": "showDialogue", "group": "faceRapidClick" }
+      ]
+    },
+    {
+      "id": "body-long-press",
+      "event": "longPress",
+      "area": "body",
+      "states": ["idle", "sit"],
+      "priority": 60,
+      "weight": 100,
+      "cooldownMs": 3000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "happy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "bodyLongPress" },
+        { "type": "resetBehaviorTimer" }
+      ]
+    },
+    {
+      "id": "body-single-click",
+      "event": "singleClick",
+      "area": "body",
+      "states": ["idle", "sit", "walk"],
+      "priority": 20,
+      "weight": 100,
+      "cooldownMs": 1500,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "happy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "bodySingleClick" },
+        { "type": "resetBehaviorTimer" }
+      ]
+    },
+    {
+      "id": "feet-single-click",
+      "event": "singleClick",
+      "area": "feet",
+      "states": ["idle", "sit"],
+      "priority": 10,
+      "weight": 100,
+      "cooldownMs": 2000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "happy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "feetTouch" }
+      ]
+    },
+    {
+      "id": "face-double-surprised",
+      "event": "doubleClick",
+      "area": "face",
+      "states": ["idle", "sit", "walk"],
+      "priority": 60,
+      "weight": 100,
+      "cooldownMs": 4000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "surprised", "fallback": "idle" },
+        { "type": "showDialogue", "group": "doubleClick" },
+        { "type": "resetBehaviorTimer" }
+      ]
+    },
+    {
+      "id": "head-long-press-happy",
+      "event": "longPress",
+      "area": "head",
+      "states": ["idle", "sit"],
+      "priority": 60,
+      "weight": 100,
+      "cooldownMs": 4000,
+      "exclusive": true,
+      "actions": [
+        { "type": "playAnimation", "animation": "happy", "fallback": "idle" },
+        { "type": "showDialogue", "group": "headTouch" },
+        { "type": "resetBehaviorTimer" }
+      ]
+    }
+  ],
+
+  "fallbackRules": {
+    "singleClick": {
+      "animation": "happy",
+      "dialogueGroup": "singleClick"
+    },
+    "doubleClick": {
+      "animation": "happy",
+      "dialogueGroup": "doubleClick"
+    },
+    "rapidClick": {
+      "animation": "angry",
+      "dialogueGroup": "rapidClick"
+    },
+    "longPress": {
+      "animation": "happy",
+      "dialogueGroup": "longPress"
+    }
+  }
+}

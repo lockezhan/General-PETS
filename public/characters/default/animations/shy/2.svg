@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 260">
+  <!-- 身体（微微压扁，收缩感） -->
+  <ellipse cx="110" cy="137" rx="100" ry="97" fill="#a0d8ef"/>
+  <!-- 眼睛（半闭，用椭圆压扁） -->
+  <ellipse cx="72" cy="114" rx="14" ry="9" fill="#333"/>
+  <ellipse cx="148" cy="114" rx="14" ry="9" fill="#333"/>
+  <!-- 腮红（更明显） -->
+  <ellipse cx="52" cy="140" rx="22" ry="12" fill="#ffb3ba" opacity="0.65"/>
+  <ellipse cx="168" cy="140" rx="22" ry="12" fill="#ffb3ba" opacity="0.65"/>
+  <!-- 嘴巴（羞涩小嘴） -->
+  <path d="M 92 165 Q 110 172 128 165" stroke="#333" stroke-width="7" fill="none" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 260">
+  <!-- 身体（纵向拉伸，惊讶弹起） -->
+  <ellipse cx="110" cy="128" rx="90" ry="110" fill="#a0d8ef"/>
+  <!-- 眼睛（大大的圆眼睛） -->
+  <circle cx="70" cy="102" r="20" fill="#333"/>
+  <circle cx="150" cy="102" r="20" fill="#333"/>
+  <!-- 高光点 -->
+  <circle cx="77" cy="96" r="6" fill="white"/>
+  <circle cx="157" cy="96" r="6" fill="white"/>
+  <!-- 嘴巴（张大的O形） -->
+  <ellipse cx="110" cy="170" rx="18" ry="16" fill="#222"/>
+  <!-- 惊讶感叹线 -->
+  <line x1="42" y1="68" x2="42" y2="50" stroke="#ffdd57" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="42" cy="76" r="3" fill="#ffdd57"/>
+  <line x1="178" y1="68" x2="178" y2="50" stroke="#ffdd57" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="178" cy="76" r="3" fill="#ffdd57"/>
+</svg>

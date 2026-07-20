@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "characters": [
+    {
+      "id": "default",
+      "manifest": "default/character.json",
+      "enabled": true
+    }
+  ]
+}

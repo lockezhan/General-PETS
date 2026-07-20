@@ -1,0 +1,403 @@
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0;
+  padding: 16px;
+  background-color: #f7f9fc;
+  color: #2c3e50;
+  box-sizing: border-box;
+}
+
+#settings-app {
+  max-width: 500px;
+  margin: 0 auto;
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+h2, h3 {
+  margin-top: 0;
+  color: #1a252f;
+}
+
+h2 {
+  border-bottom: 2px solid #ebf0f6;
+  padding-bottom: 12px;
+  margin-bottom: 20px;
+}
+
+h3 {
+  border-bottom: 1px solid #ebf0f6;
+  padding-bottom: 8px;
+  margin-top: 24px;
+  margin-bottom: 16px;
+  font-size: 16px;
+}
+
+.tab-header {
+  display: flex;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #ebf0f6;
+  gap: 8px;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #7f8c8d;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  flex: none;
+}
+
+.tab-btn:hover {
+  color: #2c3e50;
+  background-color: #f8fafd;
+}
+
+.tab-btn.active {
+  color: #3498db;
+  border-bottom-color: #3498db;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.setting-item {
+  margin-bottom: 16px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #34495e;
+}
+
+label input[type="checkbox"] {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+input[type="range"] {
+  width: calc(100% - 65px);
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.val-indicator {
+  display: inline-block;
+  width: 55px;
+  text-align: right;
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+input[type="number"], select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #dcdde1;
+  border-radius: 6px;
+  box-sizing: border-box;
+  font-size: 13px;
+  background-color: #fcfcfc;
+  color: #2c3e50;
+}
+
+input[type="number"]:focus, select:focus {
+  border-color: #3498db;
+  outline: none;
+}
+
+.setting-actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 6px;
+  background-color: #3498db;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background-color 0.2s;
+}
+
+button:hover {
+  background-color: #2980b9;
+}
+
+button:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+#btn-reset {
+  background-color: #e74c3c;
+}
+
+#btn-reset:hover {
+  background-color: #c0392b;
+}
+
+/* Character manager styles */
+.current-character-card {
+  background: #f8fafd;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.character-preview-box {
+  width: 80px;
+  height: 86px;
+  border: 1px solid #dcdde1;
+  border-radius: 6px;
+  background: #ffffff;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.character-preview-box img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.current-character-info {
+  flex: 1;
+}
+
+.char-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+  color: #2c3e50;
+}
+
+.char-desc {
+  font-size: 12px;
+  color: #7f8c8d;
+  margin-bottom: 8px;
+}
+
+.char-source {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  background: #ebf0f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  color: #7f8c8d;
+}
+
+.character-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.character-item-card {
+  border: 1px solid #ebf0f6;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: box-shadow 0.2s;
+}
+
+.character-item-card:hover {
+  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+}
+
+.character-item-card.active {
+  border-color: #3498db;
+  background-color: #fcfdfe;
+}
+
+.char-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.char-actions button {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.char-actions button.btn-delete {
+  background-color: #e74c3c;
+}
+
+.char-actions button.btn-delete:hover {
+  background-color: #c0392b;
+}
+
+.char-actions button.btn-open {
+  background-color: #95a5a6;
+}
+
+.char-actions button.btn-open:hover {
+  background-color: #7f8c8d;
+}
+
+.import-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.import-controls button {
+  flex: 1 1 45%;
+}
+
+.scan-results-list {
+  border: 1px dashed #bdc3c7;
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 250px;
+  overflow-y: auto;
+  background-color: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scan-item {
+  background: white;
+  border: 1px solid #ebf0f6;
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scan-info {
+  flex: 1;
+}
+
+.scan-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #2c3e50;
+}
+
+.scan-path {
+  font-size: 10px;
+  color: #95a5a6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.scan-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  display: inline-block;
+  margin-top: 4px;
+}
+
+.scan-badge.valid {
+  background-color: #e3faf2;
+  color: #0ca678;
+}
+
+.scan-badge.invalid {
+  background-color: #fff0f6;
+  color: #e64980;
+}
+
+.scan-badge.unsupported {
+  background-color: #fff9db;
+  color: #f59f00;
+}
+
+.error-details {
+  font-size: 10px;
+  color: #e74c3c;
+  margin-top: 4px;
+  list-style-type: none;
+  padding-left: 0;
+  margin-bottom: 0;
+}
+
+.empty-placeholder {
+  text-align: center;
+  color: #95a5a6;
+  font-size: 12px;
+  padding: 24px 0;
+}
+
+/* Thumbnail component styling */
+.character-thumbnail {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.character-thumbnail img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.character-thumbnail .thumbnail-fallback {
+  display: none;
+  font-size: 24px;
+  font-weight: bold;
+  color: #bdc3c7;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background-color: #f7f9fc;
+}
+
+.character-thumbnail.is-error img {
+  display: none;
+}
+
+.character-thumbnail.is-error .thumbnail-fallback {
+  display: flex;
+}

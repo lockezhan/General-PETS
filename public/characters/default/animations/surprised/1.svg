@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 260">
+  <!-- 身体（开始向上拉伸） -->
+  <ellipse cx="110" cy="132" rx="95" ry="104" fill="#a0d8ef"/>
+  <!-- 眼睛（开始睁大） -->
+  <circle cx="72" cy="108" r="17" fill="#333"/>
+  <circle cx="148" cy="108" r="17" fill="#333"/>
+  <!-- 高光点（眼神活跃） -->
+  <circle cx="78" cy="103" r="5" fill="white"/>
+  <circle cx="154" cy="103" r="5" fill="white"/>
+  <!-- 嘴巴（开始张开） -->
+  <ellipse cx="110" cy="168" rx="12" ry="8" fill="#222"/>
+</svg>

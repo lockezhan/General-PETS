@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "id": "default",
+  "name": "Default Pet",
+  "author": "General PETS",
+  "version": "1.2.0",
+  "description": "Built-in test character",
+  "window": {
+    "width": 260,
+    "height": 300
+  },
+  "render": {
+    "width": 220,
+    "height": 260,
+    "anchorX": 0.5,
+    "anchorY": 1,
+    "defaultScale": 1
+  },
+  "motion": {
+    "walkSpeed": 60,
+    "walkDurationMinMs": 1600,
+    "walkDurationMaxMs": 4200,
+    "idleDelayMinMs": 8000,
+    "idleDelayMaxMs": 20000,
+    "landingOffset": 0,
+    "supportsHorizontalFlip": true
+  },
+  "animations": {
+    "idle": {
+      "path": "animations/idle",
+      "fps": 4,
+      "loop": true,
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    },
+    "happy": {
+      "path": "animations/happy",
+      "fps": 8,
+      "loop": false,
+      "fallback": "idle",
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    },
+    "angry": {
+      "path": "animations/angry",
+      "fps": 8,
+      "loop": false,
+      "fallback": "idle",
+      "frames": [
+        "1.svg","2.svg","3.svg","4.svg",
+        "1.svg","2.svg","3.svg","4.svg",
+        "1.svg","2.svg","3.svg","4.svg",
+        "1.svg","2.svg","3.svg","4.svg"
+      ]
+    },
+    "dragged": {
+      "path": "animations/dragged",
+      "fps": 1,
+      "loop": true,
+      "frames": ["1.svg"]
+    },
+    "sleep": {
+      "path": "animations/sleep",
+      "fps": 3,
+      "loop": true,
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    },
+    "wake": {
+      "path": "animations/wake",
+      "fps": 6,
+      "loop": false,
+      "fallback": "idle",
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    },
+    "walk": {
+      "path": "animations/walk",
+      "fps": 6,
+      "loop": true,
+      "frames": ["001.svg", "002.svg", "003.svg", "004.svg"]
+    },
+    "sit": {
+      "path": "animations/sit",
+      "fps": 2,
+      "loop": true,
+      "frames": ["001.svg", "002.svg"]
+    },
+    "falling": {
+      "path": "animations/falling",
+      "fps": 4,
+      "loop": true,
+      "frames": ["001.svg", "002.svg"]
+    },
+    "landing": {
+      "path": "animations/landing",
+      "fps": 6,
+      "loop": false,
+      "fallback": "idle",
+      "frames": ["001.svg", "002.svg", "003.svg"]
+    },
+    "shy": {
+      "path": "animations/shy",
+      "fps": 6,
+      "loop": false,
+      "fallback": "idle",
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    },
+    "surprised": {
+      "path": "animations/surprised",
+      "fps": 8,
+      "loop": false,
+      "fallback": "idle",
+      "frames": ["1.svg", "2.svg", "3.svg", "4.svg"]
+    }
+  },
+  "dialogues": "dialogues.json",
+  "interactions": "interactions.json"
+}

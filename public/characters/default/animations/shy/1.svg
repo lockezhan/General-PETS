@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 260">
+  <!-- 身体 -->
+  <ellipse cx="110" cy="135" rx="98" ry="100" fill="#a0d8ef"/>
+  <!-- 眼睛（微微缩小） -->
+  <ellipse cx="72" cy="112" rx="14" ry="13" fill="#333"/>
+  <ellipse cx="148" cy="112" rx="14" ry="13" fill="#333"/>
+  <!-- 腮红（开始出现） -->
+  <ellipse cx="54" cy="138" rx="18" ry="10" fill="#ffb3ba" opacity="0.45"/>
+  <ellipse cx="166" cy="138" rx="18" ry="10" fill="#ffb3ba" opacity="0.45"/>
+  <!-- 嘴巴（小小的，有点紧张） -->
+  <path d="M 88 163 Q 110 175 132 163" stroke="#333" stroke-width="7" fill="none" stroke-linecap="round"/>
+</svg>

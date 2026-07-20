@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>General PETS 设置</title>
+  </head>
+  <body>
+    <div id="settings-app">
+      <h2>General PETS 设置</h2>
+      
+      <!-- Tab Header -->
+      <div class="tab-header">
+        <button class="tab-btn active" data-tab="tab-general">常规设置</button>
+        <button class="tab-btn" data-tab="tab-character">角色管理</button>
+      </div>
+
+      <!-- Tab Content: General Settings -->
+      <div id="tab-general" class="tab-content active">
+        <div class="setting-item">
+          <label for="scale">缩放 (50% - 150%)</label>
+          <input type="range" id="scale" min="0.5" max="1.5" step="0.1" value="1" />
+          <span id="scale-value" class="val-indicator">100%</span>
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="alwaysOnTop" /> 始终置顶</label>
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="randomDialogueEnabled" /> 随机对白</label>
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="sleepEnabled" /> 睡眠功能</label>
+        </div>
+        <div class="setting-item">
+          <label for="sleepDelayMinutes">睡眠等待时间 (分钟)</label>
+          <input type="number" id="sleepDelayMinutes" min="1" max="60" value="5" />
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="soundEnabled" disabled /> 音效开关 (暂未支持)</label>
+        </div>
+
+        <h3>运动与物理</h3>
+        <div class="setting-item">
+          <label><input type="checkbox" id="autoMovementEnabled" /> 允许自动移动 (自动左右行走等)</label>
+        </div>
+        <div class="setting-item">
+          <label for="walkSpeedMultiplier">行走速度倍率 (0.5x - 2.0x)</label>
+          <input type="range" id="walkSpeedMultiplier" min="0.5" max="2.0" step="0.1" value="1" />
+          <span id="walkSpeedMultiplier-value" class="val-indicator">1.0x</span>
+        </div>
+        <div class="setting-item">
+          <label for="animationSpeedMultiplier">动画速度 (0.5x - 1.5x)</label>
+          <input type="range" id="animationSpeedMultiplier" min="0.5" max="1.5" step="0.1" value="1" />
+          <span id="animationSpeedMultiplier-value" class="val-indicator">1.0x (标准)</span>
+          <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">只调整角色动作速度，不影响桌宠移动速度。</div>
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="gravityEnabled" /> 拖动释放后启用下落物理</label>
+        </div>
+        <div class="setting-item">
+          <label for="edgeBehavior">边缘行为</label>
+          <select id="edgeBehavior">
+            <option value="turn">转身返回</option>
+            <option value="stop">停止不动</option>
+          </select>
+        </div>
+        <div class="setting-actions">
+          <button id="btn-test-walk-left">测试向左行走</button>
+          <button id="btn-test-walk-right">测试向右行走</button>
+          <button id="btn-test-fall">测试下落</button>
+        </div>
+
+        <h3>自然互动</h3>
+        <div class="setting-item">
+          <label><input type="checkbox" id="interactionEnabled" /> 启用点击互动</label>
+        </div>
+        <div class="setting-item">
+          <label><input type="checkbox" id="hitAreaDebugEnabled" /> 显示点击区域调试层</label>
+        </div>
+        
+        <div class="setting-actions" style="margin-top: 16px;">
+          <button id="btn-reset">恢复默认</button>
+          <button id="btn-reset-position">重置位置</button>
+        </div>
+      </div>
+
+      <!-- Tab Content: Character Management -->
+      <div id="tab-character" class="tab-content">
+        <h3>当前角色</h3>
+        <div class="current-character-card">
+          <div class="character-preview-box" id="current-char-preview">
+            <div class="empty-placeholder">暂无预览</div>
+          </div>
+          <div class="current-character-info">
+            <div class="char-title" id="current-char-title">Loading...</div>
+            <div class="char-desc" id="current-char-desc">-</div>
+            <span class="char-source" id="current-char-source">-</span>
+          </div>
+        </div>
+
+        <h3>已安装角色</h3>
+        <div class="character-list" id="installed-characters-list">
+          <!-- Rendered dynamically -->
+        </div>
+
+        <h3>导入 Codex 角色</h3>
+        <div class="import-controls">
+          <button id="btn-select-import-dir">导入自定义文件夹</button>
+          <button id="btn-scan-codex">扫描本机 Codex</button>
+        </div>
+
+        <div id="scan-results-container" style="display: none;">
+          <h3>扫描结果</h3>
+          <div class="scan-results-list" id="scan-results-list">
+            <!-- Rendered dynamically -->
+          </div>
+          <div class="setting-actions" style="margin-top: 8px;">
+            <button id="btn-import-all-valid" style="background-color: #2ecc71;">全部导入有效角色</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <script type="module" src="/src/settings/main.ts"></script>
+  </body>
+</html>
