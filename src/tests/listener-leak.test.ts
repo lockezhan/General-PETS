@@ -22,7 +22,9 @@ describe('InteractionController Event Listeners', () => {
       getCurrentState: vi.fn().mockReturnValue('idle'),
       getFacing: vi.fn().mockReturnValue('right'),
       onDragStart: vi.fn(),
-      onDragEnd: vi.fn()
+      onDragEnd: vi.fn(),
+      onPressVisualStart: vi.fn(),
+      onPressVisualCancel: vi.fn()
     };
   });
 

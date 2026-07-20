@@ -17,6 +17,8 @@ export interface InteractionControllerCallbacks {
   getFacing: () => "left" | "right";
   onDragStart: (initialDirection: "left" | "right" | null) => void;
   onDragEnd: () => void;
+  onPressVisualStart: () => void;
+  onPressVisualCancel: () => void;
 }
 
 export class InteractionController {
@@ -116,8 +118,17 @@ export class InteractionController {
         this.callbacks.onDragEnd();
         this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId}`);
       },
-      isEnabled: () => {
+      isInteractionEnabled: () => {
         return this.settings.interactionEnabled;
+      },
+      isDragEnabled: () => {
+        return true;
+      },
+      onPressStart: () => {
+        this.callbacks.onPressVisualStart();
+      },
+      onPressCancel: () => {
+        this.callbacks.onPressVisualCancel();
       }
     });
 

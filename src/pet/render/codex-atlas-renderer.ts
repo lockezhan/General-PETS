@@ -99,38 +99,38 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   hasAnimation(name: string): boolean {
-    let resolvedName = name;
-    if (name === 'walk') {
+    const logical = this.normalizeLogicalAnimationName(name);
+    let resolvedName = logical;
+    if (logical === 'walk') {
       resolvedName = this.facing === 'left' ? 'walkLeft' : 'walkRight';
     }
-    if (resolvedName === 'running-left') resolvedName = 'walkLeft';
-    if (resolvedName === 'running-right') resolvedName = 'walkRight';
     const mapped = this.adapter.animationMapping[resolvedName as keyof typeof this.adapter.animationMapping];
     return !!(mapped && CODEX_BASE_ANIMATIONS[mapped as keyof typeof CODEX_BASE_ANIMATIONS]);
   }
 
   play(name: string, options?: AnimationPlaybackOptions): void {
-    let resolvedName = name;
-    if (name === 'walk') {
+    // 归一化：接受 running-left/running-right 兼容旧调用，立即转为逻辑键
+    const logical = this.normalizeLogicalAnimationName(name);
+    let resolvedName = logical;
+    if (logical === 'walk') {
       resolvedName = this.facing === 'left' ? 'walkLeft' : 'walkRight';
     }
-    if (resolvedName === 'running-left') resolvedName = 'walkLeft';
-    if (resolvedName === 'running-right') resolvedName = 'walkRight';
 
     const mapped = this.adapter.animationMapping[resolvedName as keyof typeof this.adapter.animationMapping] as CodexV1AnimationName;
     const config = CODEX_BASE_ANIMATIONS[mapped];
     const defaultTiming = CODEX_DEFAULT_TIMINGS[mapped];
 
     if (!config || !defaultTiming) {
-      console.warn(`[CodexAtlasRenderer] Unmapped state: ${name} -> ${mapped}`);
+      console.warn(`[CodexAtlasRenderer] Unmapped state: ${name} -> logical=${logical} -> mapped=${mapped}`);
       if (options?.onComplete) options.onComplete('idle');
       return;
     }
 
     this.clock.stop();
 
-    this.currentAnimation = name;
-    this.currentMappedAnimation = mapped; // 保存已解析后的 Codex 动画名，供 renderFrame() 判断方向
+    // currentAnimation 存逻辑键（walkLeft/walkRight），currentMappedAnimation 存图集名（running-left/running-right）
+    this.currentAnimation = resolvedName;
+    this.currentMappedAnimation = mapped;
     this.currentConfig = config;
     this.onCompleteCallback = options?.onComplete || null;
     this.loopEnabled = options?.loop !== undefined ? options.loop : defaultTiming.loop;
@@ -223,7 +223,8 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     const sourceY = row * contract.frameHeight;
     this.element.style.transform = `translate(${-sourceX * scaleX}px, ${-sourceY * scaleY}px)`;
 
-    // 使用 play() 时已解析的 mapped 名，避免重复映射（currentAnimation 保存的是逻辑名 running-left 而非映射键 walkLeft）
+    // currentMappedAnimation 是 play() 时已经解析好的图集级名称（running-left/running-right）
+    // 用于判断是否为方向行走动画，避免重复映射
     const isDirectionalWalk =
       this.currentMappedAnimation === 'running-left' ||
       this.currentMappedAnimation === 'running-right';
@@ -233,5 +234,16 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     } else {
       this.viewport.style.transform = 'none';
     }
+  }
+
+  /**
+   * 归一化逻辑动画名称。
+   * running-left → walkLeft，running-right → walkRight（向后兼容旧调用方）。
+   * currentAnimation 只应存储 walkLeft/walkRight/idle 等逻辑键，不存储 running-* 系列名称。
+   */
+  private normalizeLogicalAnimationName(name: string): string {
+    if (name === 'running-left') return 'walkLeft';
+    if (name === 'running-right') return 'walkRight';
+    return name;
   }
 }

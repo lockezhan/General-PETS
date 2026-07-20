@@ -24,6 +24,24 @@ import { BehaviorScheduler, BehaviorType } from './behavior-scheduler';
 import { InteractionManifest } from './interaction/interaction-types';
 import { validateInteractions } from './character-validator';
 
+export interface WalkDebugSnapshot {
+  requestId: number;
+  reason: "test" | "autonomous" | "onEdge" | "manual-drag";
+  requestedDirection: "left" | "right";
+  stateBefore: string;
+  stateAccepted: boolean;
+  characterId: string;
+  sourceKind: "builtin" | "installed";
+  logicalAnimation: string;
+  adapterKey: string | null;
+  mappedCodexAnimation: string | null;
+  atlasRow: number | null;
+  logicalFacing: "left" | "right";
+  cssFacing: "left" | "right";
+  viewportTransform: string;
+  velocityX: number | null;
+}
+
 const MIN_IDLE_DELAY_MS = 30_000;
 const MAX_IDLE_DELAY_MS = 90_000;
 
@@ -57,6 +75,7 @@ export class PetController {
 
   private isDraggingWindow = false;
   private dragAnimTimer: number | null = null;
+  private walkRequestId = 0;
 
   private lastShownDialogue = "";
 
@@ -168,6 +187,13 @@ export class PetController {
         this.motionController.cancelActiveMotion("drag ended");
         this.floorController.invalidateCache();
         this.handleDragRelease();
+      },
+      onPressVisualStart: () => {
+        this.player.play('dragged');
+      },
+      onPressVisualCancel: () => {
+        const currentState = this.stateMachine.getState();
+        this.playStateAnimation(currentState);
       }
     };
 
@@ -225,7 +251,7 @@ export class PetController {
           console.warn("[test-walk] invalid direction, ignoring:", direction);
           return;
         }
-        this.startWalk({ reason: 'test', direction });
+        void this.startTestWalk(direction);
     });
     
     listen(EVENT_TEST_FALL, async () => {
@@ -718,24 +744,80 @@ export class PetController {
   }
 
   public async startWalk(command: { reason: 'test' | 'autonomous' | 'onEdge'; direction: 'left' | 'right' }) {
-      const config = this.getMotionConfig();
+      const requestId = ++this.walkRequestId;
+      const floorInfo = await this.floorController.getCurrentFloorInfo();
+      if (!floorInfo) return;
+      await this.beginDirectionalWalk({
+        requestId,
+        reason: command.reason,
+        direction: command.direction,
+        floorInfo
+      });
+  }
+
+  private async startTestWalk(direction: 'left' | 'right') {
+      const requestId = ++this.walkRequestId;
+      const currentState = this.stateMachine.getState();
+
+      if (
+        currentState === "dragged" ||
+        currentState === "falling" ||
+        currentState === "landing"
+      ) {
+        console.warn("[test-walk] blocked by protected state", currentState);
+        return;
+      }
+
+      this.clearTimers();
+      if (this.sitTimer) {
+        clearTimeout(this.sitTimer);
+        this.sitTimer = null;
+      }
+      this.behaviorScheduler.cancel("settings test walk");
+      this.motionController.cancelActiveMotion("settings test walk");
+
+      // 强占当前反应动画
+      this.player.stop();
+      this.stateMachine.forceState("walk");
+
       const floorInfo = await this.floorController.getCurrentFloorInfo();
       if (!floorInfo) return;
 
-      // 先状态机切状态（不触发 playStateAnimation，避免先播旧方向动画）
-      if (!this.stateMachine.setState("walk")) return;
+      if (requestId !== this.walkRequestId) {
+        return;
+      }
 
+      await this.beginDirectionalWalk({
+        requestId,
+        reason: "test",
+        direction,
+        floorInfo
+      });
+  }
+
+  private async beginDirectionalWalk(command: {
+    requestId: number;
+    reason: "test" | "autonomous" | "onEdge";
+    direction: "left" | "right";
+    floorInfo: any;
+  }) {
+      const config = this.getMotionConfig();
       const dir = command.direction;
       const source = this.loader.getCharacterSource();
+      const stateBefore = this.stateMachine.getState();
       
+      const stateAccepted = this.stateMachine.setState("walk");
+      if (!stateAccepted) return;
+
       const res = resolveDirectionalAnimation(source, dir, (name) => this.player.hasAnimation(name));
       this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
       this.player.setFacing?.(res.facing);
+      
       this.player.play(res.animation, {
         loop: true,
         speedMultiplier: this.settings.animationSpeedMultiplier,
         onComplete: (nextState) => {
-          if (this.stateMachine.getState() === 'walk') {
+          if (this.stateMachine.getState() === 'walk' && command.requestId === this.walkRequestId) {
             this.trySetState(nextState as PetState);
           }
         }
@@ -745,13 +827,80 @@ export class PetController {
           ? 3000
           : Math.random() * (config.walkDurationMaxMs - config.walkDurationMinMs) + config.walkDurationMinMs;
 
+      // 提取快照诊断数据
+      const characterId = this.settings.characterId;
+      const sourceKind = source ? source.kind : "builtin";
+      const isCodex = sourceKind === "installed";
+      
+      let adapterKey: string | null = null;
+      let mappedCodexAnimation: string | null = null;
+      let atlasRow: number | null = null;
+      
+      if (isCodex && (this.player as any).adapter) {
+        const adapter = (this.player as any).adapter;
+        adapterKey = res.animation;
+        mappedCodexAnimation = adapter.animationMapping[res.animation] || null;
+        if (mappedCodexAnimation) {
+          const contractModule = await import('./codex/codex-atlas-contract');
+          const baseAnims = contractModule.CODEX_BASE_ANIMATIONS;
+          if (mappedCodexAnimation in baseAnims) {
+            atlasRow = (baseAnims[mappedCodexAnimation as keyof typeof baseAnims] as any).row;
+          }
+        }
+      }
+      
+      const logicalFacing = this.facingController.getFacing();
+      const cssFacing = this.petFacingLayer.dataset.facing as "left" | "right" || "right";
+      
+      let viewportTransform = "none";
+      const viewport = this.petFacingLayer.querySelector('.codex-frame-viewport') as HTMLElement;
+      if (viewport) {
+        viewportTransform = viewport.style.transform || "none";
+      }
+
+      const velocityX = dir === "left" ? -config.walkSpeed : config.walkSpeed;
+
+      const snapshot: WalkDebugSnapshot = {
+        requestId: command.requestId,
+        reason: command.reason,
+        requestedDirection: dir,
+        stateBefore,
+        stateAccepted,
+        characterId,
+        sourceKind,
+        logicalAnimation: res.animation,
+        adapterKey,
+        mappedCodexAnimation,
+        atlasRow,
+        logicalFacing,
+        cssFacing,
+        viewportTransform,
+        velocityX
+      };
+
+      console.log("[walk-trace]\n" + 
+        `reason=${snapshot.reason}\n` +
+        `requestedDirection=${snapshot.requestedDirection}\n` +
+        `stateBefore=${snapshot.stateBefore}\n` +
+        `stateAccepted=${snapshot.stateAccepted}\n` +
+        `logicalAnimation=${snapshot.logicalAnimation}\n` +
+        `adapterKey=${snapshot.adapterKey}\n` +
+        `mappedCodexAnimation=${snapshot.mappedCodexAnimation}\n` +
+        `atlasRow=${snapshot.atlasRow}\n` +
+        `logicalFacing=${snapshot.logicalFacing}\n` +
+        `cssFacing=${snapshot.cssFacing}\n` +
+        `viewportTransform=${snapshot.viewportTransform}\n` +
+        `velocityX=${snapshot.velocityX}`
+      );
+
       this.motionController.startWalk(
           config.walkSpeed,
           dir,
           duration,
-          floorInfo,
+          command.floorInfo,
           this.settings,
           () => {
+              if (command.requestId !== this.walkRequestId) return;
               if (this.settings.edgeBehavior === "stop" || command.reason === 'test') {
                   if (this.stateMachine.getState() === 'walk') this.trySetState('idle');
               } else {
@@ -760,6 +909,7 @@ export class PetController {
               }
           },
           () => {
+              if (command.requestId !== this.walkRequestId) return;
               if (this.stateMachine.getState() === 'walk') this.trySetState('idle');
           }
       );

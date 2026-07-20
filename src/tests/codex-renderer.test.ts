@@ -130,6 +130,81 @@ describe('CodexAtlasRenderer', () => {
 
     renderer.destroy();
   });
+
+  it('should play walkRight and set currentMappedAnimation to running-right on row 1 without mirroring', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+
+    renderer.play('walkRight');
+    expect((renderer as any).currentMappedAnimation).toBe('running-right');
+    // Row 1 * 208 = 208
+    expect(element.style.transform).toBe('translate(0px, -208px)');
+    expect(viewport.style.transform).toBe('none');
+
+    renderer.destroy();
+  });
+
+  it('should play walkLeft and set currentMappedAnimation to running-left on row 2 without mirroring', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+
+    renderer.play('walkLeft');
+    expect((renderer as any).currentMappedAnimation).toBe('running-left');
+    // Row 2 * 208 = 416
+    expect(element.style.transform).toBe('translate(0px, -416px)');
+    expect(viewport.style.transform).toBe('none');
+
+    renderer.destroy();
+  });
+
+  it('should not mirror walkLeft when facing is left', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+
+    renderer.setFacing('left');
+    renderer.play('walkLeft');
+    expect(viewport.style.transform).toBe('none');
+
+    renderer.destroy();
+  });
+
+  it('should mirror idle when facing is left', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+
+    renderer.setFacing('left');
+    renderer.play('idle');
+    expect(viewport.style.transform).toBe('scaleX(-1)');
+
+    renderer.destroy();
+  });
+
+  it('should support version 2 adapters with 11 rows and 2288px height', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const v2Adapter = { ...adapterConfig, spriteVersionNumber: 2 as const };
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', v2Adapter);
+    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+
+    renderer.play('idle');
+    // atlasHeight = 2288
+    expect(element.style.height).toBe('2288px');
+
+    renderer.destroy();
+  });
 });
 
 describe('CharacterLoader with Codex installed pets', () => {

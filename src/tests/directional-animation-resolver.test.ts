@@ -11,12 +11,12 @@ describe('Directional Animation Resolver', () => {
     };
 
     const leftRes = resolveDirectionalAnimation(source, 'left', () => true);
-    expect(leftRes.animation).toBe('running-left');
+    expect(leftRes.animation).toBe('walkLeft');
     expect(leftRes.facing).toBe('left');
     expect(leftRes.useFacingMirror).toBe(false);
 
     const rightRes = resolveDirectionalAnimation(source, 'right', () => true);
-    expect(rightRes.animation).toBe('running-right');
+    expect(rightRes.animation).toBe('walkRight');
     expect(rightRes.facing).toBe('right');
     expect(rightRes.useFacingMirror).toBe(false);
   });

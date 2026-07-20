@@ -92,11 +92,28 @@ export interface PointerSession {
   startScreenY: number;
   startClientX: number;
   startClientY: number;
+  pointerId: number;
   areaId: string | null;
   draggable: boolean;
   startedAt: number;
+  /** 本次手势期间的最大移动距离（像素）*/
+  maxDistance: number;
+  /** 手势阶段 */
+  phase: GesturePhase;
+  /** 800ms 计时器已经到期、但 longPress 尚未提交（等待 pointerup 再提交）*/
+  longPressEligible: boolean;
+  /** 兼容旧字段 */
   dragging: boolean;
   nativeDragRequested: boolean;
   longPressTriggered: boolean;
   cancelled: boolean;
 }
+
+/** 手势阶段状态机 */
+export type GesturePhase =
+  | "idle"
+  | "pending"            // pointerdown 后等待
+  | "dragging"           // 超过移动阈值，进入原生拖动
+  | "longPressEligible"  // 800ms 到期，等待 pointerup 提交 longPress
+  | "longPressCommitted" // longPress 已提交（pointerup 后不再触发 click）
+  | "cancelled";         // 手势取消

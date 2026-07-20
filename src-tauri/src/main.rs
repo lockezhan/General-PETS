@@ -862,9 +862,69 @@ fn repair_missing_character_previews(app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+fn repair_installed_codex_adapters_impl(app: &tauri::AppHandle) -> Result<(), String> {
+    let app_local_data = app.path().app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve AppLocalData: {}", e))?;
+    let characters_dir = app_local_data.join("characters");
+    let index_path = characters_dir.join("installed-index.json");
+    
+    if !index_path.exists() {
+        return Ok(());
+    }
+
+    let index = load_installed_index(&index_path)?;
+    for char in &index.characters {
+        let char_dir = std::path::Path::new(&char.absolute_path);
+        if !char_dir.exists() {
+            continue;
+        }
+
+        let adapter_json_path = char_dir.join("general-pets.adapter.json");
+        if adapter_json_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&adapter_json_path) {
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let mut modified = false;
+                    
+                    if let Some(mapping) = json.get_mut("animationMapping").and_then(|m| m.as_object_mut()) {
+                        let standard_left = "running-left";
+                        let standard_right = "running-right";
+
+                        let current_left = mapping.get("walkLeft").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let current_right = mapping.get("walkRight").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                        if current_left != standard_left {
+                            mapping.insert("walkLeft".to_string(), serde_json::Value::String(standard_left.to_string()));
+                            modified = true;
+                        }
+                        if current_right != standard_right {
+                            mapping.insert("walkRight".to_string(), serde_json::Value::String(standard_right.to_string()));
+                            modified = true;
+                        }
+                    }
+
+                    if modified {
+                        println!("[codex-repair] Correcting walkLeft/walkRight mapping for: {}", char.id);
+                        if let Ok(new_content) = serde_json::to_string_pretty(&json) {
+                            let _ = std::fs::write(&adapter_json_path, new_content);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn repair_installed_codex_adapters(app: tauri::AppHandle) -> Result<(), String> {
+    repair_installed_codex_adapters_impl(&app)
+}
+
 #[tauri::command]
 fn list_installed_characters(app: tauri::AppHandle) -> Result<Vec<InstalledCharacter>, String> {
     let _ = repair_missing_character_previews(app.clone());
+    let _ = repair_installed_codex_adapters_impl(&app);
 
     let app_local_data = app.path().app_local_data_dir()
         .map_err(|e| format!("Failed to resolve AppLocalData: {}", e))?;
@@ -1017,6 +1077,66 @@ fn open_installed_character_directory(app: tauri::AppHandle, id: String) -> Resu
     Ok(())
 }
 
+#[tauri::command]
+fn export_codex_direction_probe(app: tauri::AppHandle, character_id: String) -> Result<serde_json::Value, String> {
+    let app_local_data = app.path().app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve AppLocalData: {}", e))?;
+    let characters_dir = app_local_data.join("characters");
+    let index_path = characters_dir.join("installed-index.json");
+    
+    let index = load_installed_index(&index_path)?;
+    let char_info = index.characters.iter().find(|c| c.id == character_id)
+        .ok_or_else(|| format!("Character '{}' not found", character_id))?;
+        
+    let char_dir = characters_dir.join(&char_info.directory);
+    
+    let pet_json_path = char_dir.join("pet.json");
+    let mut spritesheet_rel = "spritesheet.webp".to_string();
+    if pet_json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pet_json_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(path_str) = json.get("spritesheetPath").or_else(|| json.get("spritesheet")).and_then(|v| v.as_str()) {
+                    spritesheet_rel = path_str.to_string();
+                }
+            }
+        }
+    }
+    
+    let spritesheet_path = char_dir.join(&spritesheet_rel);
+    if !spritesheet_path.exists() {
+        return Err(format!("Spritesheet path does not exist: {:?}", spritesheet_path));
+    }
+    
+    let img = image::open(&spritesheet_path)
+        .map_err(|e| format!("Failed to open spritesheet image: {}", e))?;
+        
+    let cache_dir = app.path().app_cache_dir()
+        .map_err(|e| format!("Failed to resolve AppCache: {}", e))?;
+    
+    let right_probe_path = cache_dir.join(format!("{}_running_right_probe.png", character_id));
+    let left_probe_path = cache_dir.join(format!("{}_running_left_probe.png", character_id));
+    
+    let frame_width = 192;
+    let frame_height = 208;
+    
+    // Row 1 (running-right) Col 0
+    let right_frame = image::imageops::crop_imm(&img, 0, frame_height, frame_width, frame_height).to_image();
+    right_frame.save(&right_probe_path)
+        .map_err(|e| format!("Failed to save right probe: {}", e))?;
+        
+    // Row 2 (running-left) Col 0
+    let left_frame = image::imageops::crop_imm(&img, 0, frame_height * 2, frame_width, frame_height).to_image();
+    left_frame.save(&left_probe_path)
+        .map_err(|e| format!("Failed to save left probe: {}", e))?;
+        
+    println!("[codex-probe] Exported direction probes for character '{}':\n  Right: {:?}\n  Left: {:?}", character_id, right_probe_path, left_probe_path);
+    
+    Ok(serde_json::json!({
+        "rightProbePath": right_probe_path.to_string_lossy().to_string(),
+        "leftProbePath": left_probe_path.to_string_lossy().to_string()
+    }))
+}
+
 fn main() {
     println!(
         "[startup] pid={} exe={:?}",
@@ -1047,7 +1167,9 @@ fn main() {
             delete_installed_character,
             open_installed_character_directory,
             repair_missing_character_previews,
-            load_installed_character_configs
+            load_installed_character_configs,
+            repair_installed_codex_adapters,
+            export_codex_direction_probe
         ])
         .setup(|app| {
             create_main_tray(app)?;

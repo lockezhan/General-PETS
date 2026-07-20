@@ -18,13 +18,14 @@ describe('InteractionRecognizer', () => {
       onEvent: (event, areaId) => {
         eventsDispatched.push({ event, areaId });
       },
-      onDragStart: () => {
+      onDragStart: (_areaId, _initialDirection) => {
         dragStarted = true;
       },
       onDragEnd: () => {
       },
       findArea: () => ({ id: 'head', draggable: true }),
-      isEnabled: () => true
+      isInteractionEnabled: () => true,
+      isDragEnabled: () => true
     };
   });
 
@@ -87,18 +88,21 @@ describe('InteractionRecognizer', () => {
 
     firePointerDown(element);
 
-    // Wait 800ms for longPress to fire
+    // Wait 800ms
     vi.advanceTimersByTime(800);
+
+    // Deferred commit: not immediately triggered
+    expect(eventsDispatched.length).toBe(0);
+
+    // Release mouse -> triggers now
+    firePointerUp(element);
 
     expect(eventsDispatched.length).toBe(1);
     expect(eventsDispatched[0]).toEqual({ event: 'longPress', areaId: 'head' });
 
-    // Release mouse
-    firePointerUp(element);
-
     // Verify no single or double click fires after release
     vi.advanceTimersByTime(300);
-    expect(eventsDispatched.length).toBe(1); // Still only 1 event (the longPress)
+    expect(eventsDispatched.length).toBe(1); // Still only 1 event
 
     recognizer.unbindEvents();
   });
@@ -158,6 +162,56 @@ describe('InteractionRecognizer', () => {
     vi.advanceTimersByTime(300);
     expect(eventsDispatched.length).toBe(0);
 
+    recognizer.unbindEvents();
+  });
+
+  it('should trigger drag but not longPress when moving after 900ms', () => {
+    const recognizer = new InteractionRecognizer(element, callbacks);
+
+    firePointerDown(element, 100, 100);
+    vi.advanceTimersByTime(900);
+
+    // Now move past threshold (7px)
+    firePointerMove(element, 107, 100);
+    expect(dragStarted).toBe(true);
+
+    firePointerUp(element, 107, 100);
+    vi.advanceTimersByTime(300);
+
+    // Expect no longPress and no clicks
+    expect(eventsDispatched.length).toBe(0);
+    recognizer.unbindEvents();
+  });
+
+  it('should trigger longPress on pointerup after 800ms', () => {
+    const recognizer = new InteractionRecognizer(element, callbacks);
+
+    firePointerDown(element, 100, 100);
+    vi.advanceTimersByTime(850);
+
+    // No longPress immediately emitted
+    expect(eventsDispatched.length).toBe(0);
+
+    firePointerUp(element, 100, 100);
+    // Emitted on pointerup
+    expect(eventsDispatched.length).toBe(1);
+    expect(eventsDispatched[0]).toEqual({ event: 'longPress', areaId: 'head' });
+
+    recognizer.unbindEvents();
+  });
+
+  it('should allow drag but prevent clicks when interaction is disabled', () => {
+    callbacks.isInteractionEnabled = () => false;
+    const recognizer = new InteractionRecognizer(element, callbacks);
+
+    firePointerDown(element, 100, 100);
+    firePointerMove(element, 108, 100);
+    expect(dragStarted).toBe(true);
+
+    firePointerUp(element, 108, 100);
+    vi.advanceTimersByTime(300);
+
+    expect(eventsDispatched.length).toBe(0);
     recognizer.unbindEvents();
   });
 });
