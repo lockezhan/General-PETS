@@ -1,14 +1,34 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StrokeRecognizer } from '../pet/natural/stroke-recognizer';
-import { ReactionSession } from '../pet/natural/reaction-session';
 import { ActionDirector } from '../pet/natural/action-director';
 import { BehaviorPlanner } from '../pet/natural/behavior-planner';
 import { DialogueDirector, getDialogueDurationMs } from '../pet/natural/dialogue-director';
 import { DragPoseController } from '../pet/natural/drag-pose-controller';
+import { PetVisualCoordinator } from '../pet/natural/visual-coordinator';
 import { NaturalPointerSession } from '../pet/natural/natural-types';
 import { DEFAULT_SETTINGS } from '../shared/defaults';
 
-describe('Natural Interaction System (Phase 7)', () => {
+describe('Natural Interaction System (Phase 7.1 Reset)', () => {
+  describe('PetVisualCoordinator', () => {
+    it('should correctly prioritize motion state over reaction state', () => {
+      const coordinator = new PetVisualCoordinator();
+
+      coordinator.setReactionState('waving', 'user');
+      expect(coordinator.resolveEffectiveAnimation().animation).toBe('waving');
+
+      coordinator.setMotionState('falling');
+      expect(coordinator.resolveEffectiveAnimation().animation).toBe('jumping');
+      expect(coordinator.resolveEffectiveAnimation().source).toBe('physics');
+
+      coordinator.setMotionState('drag-left');
+      expect(coordinator.resolveEffectiveAnimation().animation).toBe('running-left');
+      expect(coordinator.resolveEffectiveAnimation().source).toBe('drag');
+
+      coordinator.clearMotionState('test');
+      expect(coordinator.resolveEffectiveAnimation().animation).toBe('waving');
+    });
+  });
+
   describe('StrokeRecognizer', () => {
     let recognizer: StrokeRecognizer;
     let session: NaturalPointerSession;
@@ -41,13 +61,12 @@ describe('Natural Interaction System (Phase 7)', () => {
     });
 
     it('should detect reciprocal stroke gesture with reversals', () => {
-      // Simulate left-right-left movement
       let t = 1000;
-      recognizer.updateMove(session, 110, 100, t += 50); // right
-      recognizer.updateMove(session, 120, 100, t += 50); // right
-      recognizer.updateMove(session, 105, 100, t += 50); // left (reversal 1)
-      recognizer.updateMove(session, 90, 100, t += 50);  // left
-      recognizer.updateMove(session, 115, 100, t += 50); // right (reversal 2)
+      recognizer.updateMove(session, 110, 100, t += 50);
+      recognizer.updateMove(session, 120, 100, t += 50);
+      recognizer.updateMove(session, 105, 100, t += 50);
+      recognizer.updateMove(session, 90, 100, t += 50);
+      recognizer.updateMove(session, 115, 100, t += 50);
 
       expect(session.directionReversals).toBeGreaterThanOrEqual(2);
       expect(session.strokeCommitted).toBe(true);
@@ -61,26 +80,6 @@ describe('Natural Interaction System (Phase 7)', () => {
 
       expect(session.directionReversals).toBe(0);
       expect(session.strokeCommitted).toBe(false);
-    });
-  });
-
-  describe('ReactionSession', () => {
-    it('should initialize and support extend without restarting', () => {
-      const rs = new ReactionSession('touch-head', 1000);
-      expect(rs.active).toBe(true);
-
-      const extended = rs.extend(1200);
-      expect(extended).toBe(true);
-      expect(rs.lastExtendedAt).toBe(1200);
-    });
-
-    it('should end naturally when exceeding max duration', () => {
-      const rs = new ReactionSession('touch-head', 1000);
-      const extended = rs.extend(1000 + 8500); // > 8000ms
-
-      expect(extended).toBe(false);
-      expect(rs.active).toBe(false);
-      expect(rs.finishedReason).toBe('max-duration-reached');
     });
   });
 
@@ -98,7 +97,6 @@ describe('Natural Interaction System (Phase 7)', () => {
 
       const director = new ActionDirector(mockPlayer as any);
 
-      // 1. Ambient request
       const ok1 = director.requestAction({
         id: 'a1',
         animation: 'idle',
@@ -107,19 +105,17 @@ describe('Natural Interaction System (Phase 7)', () => {
       });
       expect(ok1).toBe(true);
 
-      // 2. Interaction request overrides ambient
       const ok2 = director.requestAction({
         id: 'a2',
-        animation: 'happy',
+        animation: 'waving',
         priority: 'interaction',
         source: 'user',
       });
       expect(ok2).toBe(true);
 
-      // 3. Ambient request CANNOT override active interaction
       const ok3 = director.requestAction({
         id: 'a3',
-        animation: 'sit',
+        animation: 'waiting',
         priority: 'ambient',
         source: 'behavior',
       });
@@ -136,7 +132,7 @@ describe('Natural Interaction System (Phase 7)', () => {
 
       const context = {
         idleDurationMs: 1000,
-        sinceLastUserInteractionMs: 1000, // < 5000ms
+        sinceLastUserInteractionMs: 1000,
         lastActionId: 'idle',
         recentActions: [],
         facing: 'right' as const,
@@ -145,9 +141,9 @@ describe('Natural Interaction System (Phase 7)', () => {
         currentHour: 12,
       };
 
-      const plan = planner.planNextBehavior(DEFAULT_SETTINGS, context, ['walk', 'sit', 'wave']);
-      expect(['idle', 'wave']).toContain(plan.logicalAction);
-      expect(plan.logicalAction).not.toBe('walk');
+      const plan = planner.planNextBehavior(DEFAULT_SETTINGS, context, ['walk', 'sit', 'wave', 'failed']);
+      expect(plan.logicalAction).toBe('idle');
+      expect(plan.logicalAction).not.toBe('failed');
     });
   });
 
@@ -170,13 +166,11 @@ describe('Natural Interaction System (Phase 7)', () => {
     it('should resolve pose based on velocity and direction', () => {
       const controller = new DragPoseController();
 
-      // High horizontal velocity right
-      const poseRight = controller.resolveDragPose(10, 0, 100, 0);
+      const poseRight = controller.resolveDragPose(10, 'right');
       expect(poseRight).toBe('carried-right');
 
-      // High vertical velocity
-      const poseVert = controller.resolveDragPose(0, 10, 0, 150);
-      expect(poseVert).toBe('carried-vertical');
+      const poseStatic = controller.resolveDragPose(0, null);
+      expect(poseStatic).toBe('carried-static');
     });
   });
 });

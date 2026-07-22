@@ -3,16 +3,20 @@ import { InteractionEventType, PointerSession, GesturePhase } from './interactio
 import { StrokeRecognizer } from '../natural/stroke-recognizer';
 import { NaturalPointerSession, InteractionRole } from '../natural/natural-types';
 
-const DRAG_THRESHOLD_PX = 6;
-const LONG_PRESS_MS = 800;
+const DRAG_THRESHOLD_PX = 8;
+const LONG_PRESS_MS = 650;
 const DOUBLE_CLICK_WINDOW_MS = 280;
 const RAPID_CLICK_WINDOW_MS = 2000;
 const RAPID_CLICK_THRESHOLD = 5;
+const CLICK_SUPPRESS_AFTER_DRAG_MS = 300;
 
 export interface RecognizerCallbacks {
   onEvent: (event: InteractionEventType, areaId: string | null, clientX: number, clientY: number) => void;
   onDragStart: (areaId: string | null, initialDirection: "left" | "right" | null) => void;
   onDragEnd: (areaId: string | null) => void;
+  onStrokeStart?: (areaId: string | null) => void;
+  onStrokeProgress?: (areaId: string | null) => void;
+  onStrokeEnd?: (areaId: string | null) => void;
   findArea: (clientX: number, clientY: number) => { 
     id: string; 
     draggable?: boolean;
@@ -21,6 +25,7 @@ export interface RecognizerCallbacks {
   } | null;
   isInteractionEnabled: () => boolean;
   isDragEnabled: () => boolean;
+  isAdvancedPettingEnabled: () => boolean;
   onPressStart?: () => void;
   onPressCancel?: () => void;
 }
@@ -34,6 +39,10 @@ export class InteractionRecognizer {
   private clickQueue: Array<{ timestamp: number; areaId: string | null }> = [];
   private singleClickTimer: number | null = null;
   private longPressTimer: number | null = null;
+
+  private lastDragEndedAt: number = -1000;
+  private lastStrokeProgressAt: number = 0;
+  private strokeStarted: boolean = false;
 
   constructor(element: HTMLElement, callbacks: RecognizerCallbacks) {
     this.element = element;
@@ -82,6 +91,7 @@ export class InteractionRecognizer {
     }
     console.log(`[gesture] finishDrag reason=${reason}`);
     this.session.dragging = false;
+    this.lastDragEndedAt = performance.now();
     const areaId = this.session.areaId;
     this.callbacks.onDragEnd(areaId);
   }
@@ -96,25 +106,25 @@ export class InteractionRecognizer {
     const dragOk = this.callbacks.isDragEnabled();
     if (!interactionOk && !dragOk) return;
 
-    // 区域角色定位：只有 pickup 或显示包含 draggable 的区域才支持拖动
-    const role: InteractionRole = area.interactionRole || (area.draggable ? "pickup" : "touch");
-    const isDraggable = (role === "pickup" || role === "touch-and-pickup") && area.draggable !== false && dragOk;
+    const role: InteractionRole = area.interactionRole || "touch-and-pickup";
+    const isDraggable = dragOk && area.draggable !== false;
 
     console.log(`[gesture] pointerdown area=${area.id} role=${role} draggable=${isDraggable}`);
 
     try {
       this.element.setPointerCapture(e.pointerId);
-    } catch (err) {
-      // ignore
-    }
+    } catch (_) { /* ignore */ }
 
     const now = performance.now();
+    this.strokeStarted = false;
+
+    const acceptsStroke = (this.callbacks.isAdvancedPettingEnabled ? this.callbacks.isAdvancedPettingEnabled() : false) && area.acceptsStroke !== false;
 
     this.naturalSession = {
       pointerId: e.pointerId,
       areaId: area.id,
       interactionRole: role,
-      acceptsStroke: area.acceptsStroke !== false,
+      acceptsStroke,
       draggable: isDraggable,
       startedAt: now,
       startX: e.clientX,
@@ -187,25 +197,31 @@ export class InteractionRecognizer {
 
     const now = performance.now();
 
-    // 1. 抚摸分析
-    if (this.naturalSession) {
+    // 1. 抚摸检测（仅在高级抚摸模式开启时）
+    if (this.naturalSession && this.callbacks.isAdvancedPettingEnabled?.()) {
       this.strokeRecognizer.updateMove(this.naturalSession, e.clientX, e.clientY, now);
 
       if (this.naturalSession.strokeCommitted && !this.session.nativeDragRequested) {
         this.clearLongPressTimer();
         this.clearSingleClickTimer();
-        this.callbacks.onEvent("stroke", this.session.areaId, e.clientX, e.clientY);
+
+        if (!this.strokeStarted) {
+          this.strokeStarted = true;
+          console.log('[gesture] strokeStarted');
+          this.callbacks.onStrokeStart?.(this.session.areaId);
+        } else if (now - this.lastStrokeProgressAt >= 50) {
+          this.lastStrokeProgressAt = now;
+          this.callbacks.onStrokeProgress?.(this.session.areaId);
+        }
       }
     }
 
-    // 2. 拖拽提起判定（严格限制：只有可拖拽区域才触发原生拖动）
-    if (distance >= DRAG_THRESHOLD_PX) {
+    // 2. 拖拽判定 (>= 8px)
+    if (distance >= DRAG_THRESHOLD_PX && !this.naturalSession?.strokeCommitted) {
       this.clearLongPressTimer();
       this.clearSingleClickTimer();
 
       if (this.session.draggable) {
-        if (this.naturalSession) this.naturalSession.pickupCommitted = true;
-
         if (!this.session.nativeDragRequested) {
           this.session.phase = 'dragging';
           this.session.longPressEligible = false;
@@ -259,17 +275,19 @@ export class InteractionRecognizer {
     this.clearLongPressTimer();
     this.callbacks.onPressCancel?.();
 
-    const phase = this.session.phase;
-
-    if (phase === 'dragging' || this.session.nativeDragRequested) {
-      this.finishDrag("pointerup");
+    if (this.strokeStarted) {
+      console.log('[gesture] strokeEnd on pointerup');
+      this.callbacks.onStrokeEnd?.(this.session.areaId);
+      this.strokeStarted = false;
       this.session = null;
       this.naturalSession = null;
       return;
     }
 
-    if (this.naturalSession?.strokeCommitted) {
-      console.log(`[gesture] stroke finished on pointerup`);
+    const phase = this.session.phase;
+
+    if (phase === 'dragging' || this.session.nativeDragRequested) {
+      this.finishDrag("pointerup");
       this.session = null;
       this.naturalSession = null;
       return;
@@ -293,13 +311,21 @@ export class InteractionRecognizer {
       return;
     }
 
+    // 300ms 点击抑制：若刚结束拖拽，绝不触发点击
+    const now = performance.now();
+    if (now - this.lastDragEndedAt < CLICK_SUPPRESS_AFTER_DRAG_MS) {
+      console.log('[gesture] click suppressed after drag');
+      this.session = null;
+      this.naturalSession = null;
+      return;
+    }
+
     if (!this.callbacks.isInteractionEnabled()) {
       this.session = null;
       this.naturalSession = null;
       return;
     }
 
-    const now = performance.now();
     const areaId = this.session.areaId;
 
     this.clickQueue.push({ timestamp: now, areaId });
@@ -333,6 +359,11 @@ export class InteractionRecognizer {
     try {
       this.element.releasePointerCapture(e.pointerId);
     } catch (_) { /* ignore */ }
+
+    if (this.strokeStarted && this.session) {
+      this.callbacks.onStrokeEnd?.(this.session.areaId);
+      this.strokeStarted = false;
+    }
 
     if (this.session) {
       if (this.session.phase === 'dragging' || this.session.nativeDragRequested) {

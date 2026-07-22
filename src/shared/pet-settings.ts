@@ -1,3 +1,5 @@
+import { InteractionStyle } from '../pet/natural/natural-types';
+
 export interface PetSettings {
   schemaVersion: number;
   characterId: string;
@@ -21,4 +23,5 @@ export interface PetSettings {
   hoverPettingEnabled: boolean;
   dialogueFrequency: "quiet" | "normal" | "frequent";
   ambientBehaviorFrequency: "low" | "normal" | "high";
+  interactionStyle: InteractionStyle;
 }

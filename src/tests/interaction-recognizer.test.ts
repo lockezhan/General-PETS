@@ -7,6 +7,7 @@ describe('InteractionRecognizer', () => {
   let callbacks: RecognizerCallbacks;
   let eventsDispatched: Array<{ event: InteractionEventType; areaId: string | null }>;
   let dragStarted = false;
+  let dragEnded = false;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -22,10 +23,12 @@ describe('InteractionRecognizer', () => {
         dragStarted = true;
       },
       onDragEnd: () => {
+        dragEnded = true;
       },
       findArea: () => ({ id: 'head', draggable: true }),
       isInteractionEnabled: () => true,
-      isDragEnabled: () => true
+      isDragEnabled: () => true,
+      isAdvancedPettingEnabled: () => false
     };
   });
 
@@ -126,6 +129,7 @@ describe('InteractionRecognizer', () => {
 
     // Release
     firePointerUp(element, 108, 100);
+    expect(dragEnded).toBe(true);
     // Verify no click is triggered on release
     vi.advanceTimersByTime(300);
     expect(eventsDispatched.length).toBe(0);
@@ -171,11 +175,11 @@ describe('InteractionRecognizer', () => {
     firePointerDown(element, 100, 100);
     vi.advanceTimersByTime(900);
 
-    // Now move past threshold (7px)
-    firePointerMove(element, 107, 100);
+    // Now move past threshold (9px > 8px)
+    firePointerMove(element, 109, 100);
     expect(dragStarted).toBe(true);
 
-    firePointerUp(element, 107, 100);
+    firePointerUp(element, 109, 100);
     vi.advanceTimersByTime(300);
 
     // Expect no longPress and no clicks

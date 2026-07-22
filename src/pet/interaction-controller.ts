@@ -22,6 +22,7 @@ export interface InteractionControllerCallbacks {
   onPressVisualStart: () => void;
   onPressVisualCancel: () => void;
   onStrokeReaction?: (areaId: string | null) => void;
+  onHoverReaction?: (areaId: string | null) => void;
 }
 
 export class InteractionController {
@@ -40,6 +41,9 @@ export class InteractionController {
   private callbacks: InteractionControllerCallbacks;
   private settings: PetSettings;
   private manifest: InteractionManifest | null = null;
+
+  private lastHoverTime: number = 0;
+  private currentHoverArea: string | null = null;
 
   constructor(
     element: HTMLElement,
@@ -112,27 +116,6 @@ export class InteractionController {
           this.callbacks.cancelMotion();
         }
 
-        // 抚摸特规逻辑：使用 ReactionSession 避免重置帧
-        if (event === "stroke") {
-          if (!this.activeReactionSession) {
-            this.activeReactionSession = new ReactionSession(
-              areaId === "head" ? "touch-head" : "touch-body"
-            );
-            if (this.callbacks.onStrokeReaction) {
-              this.callbacks.onStrokeReaction(areaId);
-            }
-          } else {
-            this.activeReactionSession.extend();
-          }
-
-          if (this.dialogueDirector.shouldShowDialogue("stroke", this.settings)) {
-            const dialogue = this.callbacks.getRandomDialogueFromGroup("headTouch") || "♪(･ω･)ﾉ";
-            this.callbacks.showDialogue(dialogue);
-            this.dialogueDirector.recordDialogueShown();
-          }
-          return;
-        }
-
         const rule = this.ruleEngine.matchRule(event, areaId, currentState, this.manifest);
         
         console.log(`[interaction] recognized event=${event} area=${areaId} state=${currentState} -> rule=${rule ? rule.id : 'fallback'}`);
@@ -144,6 +127,33 @@ export class InteractionController {
         } else {
           this.executeFallback(event);
         }
+      },
+      onStrokeStart: (areaId) => {
+        if (!this.activeReactionSession) {
+          this.activeReactionSession = new ReactionSession(
+            areaId === "head" ? "touch-head" : "touch-body"
+          );
+          if (this.callbacks.onStrokeReaction) {
+            this.callbacks.onStrokeReaction(areaId);
+          }
+        }
+        if (this.dialogueDirector.shouldShowDialogue("stroke", this.settings)) {
+          const dialogue = this.callbacks.getRandomDialogueFromGroup("headTouch") || "♪(･ω･)ﾉ";
+          this.callbacks.showDialogue(dialogue);
+          this.dialogueDirector.recordDialogueShown();
+        }
+      },
+      onStrokeProgress: (_areaId) => {
+        if (this.activeReactionSession) {
+          this.activeReactionSession.extend();
+        }
+      },
+      onStrokeEnd: (_areaId) => {
+        if (this.activeReactionSession) {
+          this.activeReactionSession.finish("strokeEnd");
+          this.activeReactionSession = null;
+        }
+        this.dialogueDirector.resetStrokeDialogueState();
       },
       onDragStart: (areaId, initialDirection) => {
         this.callbacks.onDragStart(initialDirection);
@@ -162,6 +172,9 @@ export class InteractionController {
       isDragEnabled: () => {
         return true;
       },
+      isAdvancedPettingEnabled: () => {
+        return this.settings.interactionStyle === "advanced-petting";
+      },
       onPressStart: () => {
         this.callbacks.onPressVisualStart();
       },
@@ -174,13 +187,36 @@ export class InteractionController {
   }
 
   private handlePointerMoveHover = (e: PointerEvent) => {
-    if (!this.settings.hitAreaDebugEnabled) return;
     if (!this.settings.interactionEnabled) return;
-    
+
     const spriteRect = this.spriteImg.getBoundingClientRect();
     const facing = this.callbacks.getFacing();
     const area = this.hitAreaEngine.findHitArea(e.clientX, e.clientY, spriteRect, facing);
-    this.debugOverlay.updatePointerInfo(e.clientX, e.clientY, area ? area.id : null);
+
+    if (this.settings.hitAreaDebugEnabled) {
+      this.debugOverlay.updatePointerInfo(e.clientX, e.clientY, area ? area.id : null);
+    }
+
+    const now = performance.now();
+    const areaId = area ? area.id : null;
+
+    if (areaId !== this.currentHoverArea) {
+      this.currentHoverArea = areaId;
+
+      // 仅在首次进入区域且达到 2000ms 冷却时响应
+      if (areaId && now - this.lastHoverTime >= 2000) {
+        this.lastHoverTime = now;
+        const currentState = this.callbacks.getCurrentState();
+
+        if (currentState === "idle" || currentState === "sit") {
+          // 20% 概率触发低频轻微 hover 反应
+          if (Math.random() < 0.20 && this.callbacks.onHoverReaction) {
+            console.log(`[hover] triggered on area=${areaId}`);
+            this.callbacks.onHoverReaction(areaId);
+          }
+        }
+      }
+    }
   };
 
   public updateSettings(settings: PetSettings) {
@@ -211,19 +247,19 @@ export class InteractionController {
     } else {
       switch (event) {
         case "singleClick":
-          animation = "happy";
+          animation = "waving";
           dialogueGroup = "singleClick";
           break;
         case "doubleClick":
-          animation = "happy";
+          animation = "jumping";
           dialogueGroup = "doubleClick";
           break;
         case "rapidClick":
-          animation = "angry";
+          animation = "failed";
           dialogueGroup = "rapidClick";
           break;
         case "longPress":
-          animation = "happy";
+          animation = "review";
           dialogueGroup = "longPress";
           break;
       }

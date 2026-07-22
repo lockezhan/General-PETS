@@ -1,5 +1,7 @@
 import { AnimationTiming } from '../../shared/character-types';
 
+export type InteractionStyle = "codex-simple" | "advanced-petting";
+
 export type InteractionIntent =
   | "tap"
   | "doubleTap"
@@ -104,50 +106,37 @@ export const DEFAULT_CODEX_HIT_AREAS: HitAreaBase[] = [
     shape: "ellipse",
     cx: 0.5,
     cy: 0.23,
-    rx: 0.27,
-    ry: 0.19,
+    rx: 0.28,
+    ry: 0.20,
     priority: 40,
-    interactionRole: "touch",
+    interactionRole: "touch-and-pickup",
     acceptsStroke: true,
-    draggable: false
+    draggable: true
   },
   {
     id: "face",
     name: "脸部",
     shape: "ellipse",
     cx: 0.5,
-    cy: 0.3,
-    rx: 0.16,
-    ry: 0.12,
+    cy: 0.32,
+    rx: 0.18,
+    ry: 0.13,
     priority: 50,
-    interactionRole: "touch",
+    interactionRole: "touch-and-pickup",
     acceptsStroke: false,
-    draggable: false
+    draggable: true
   },
   {
     id: "body",
     name: "身体",
     shape: "rect",
-    x: 0.27,
+    x: 0.24,
     y: 0.38,
-    width: 0.46,
-    height: 0.38,
+    width: 0.52,
+    height: 0.52,
     priority: 20,
-    interactionRole: "touch",
+    interactionRole: "touch-and-pickup",
     acceptsStroke: true,
-    draggable: false
-  },
-  {
-    id: "pickup",
-    name: "提起区域",
-    shape: "rect",
-    x: 0.34,
-    y: 0.46,
-    width: 0.32,
-    height: 0.3,
-    priority: 30,
-    interactionRole: "pickup",
-    acceptsStroke: false,
     draggable: true
   }
 ];

@@ -9,11 +9,11 @@ export interface PlannedBehavior {
 }
 
 export const ACTION_TRANSITIONS: Record<string, Record<string, number>> = {
-  idle: { idle: 30, walk: 22, sit: 15, wave: 10, review: 10, hop: 6, run: 5, fail: 2 },
-  walk: { idle: 45, sit: 25, review: 15, wave: 10, walk: 5 },
-  sit: { idle: 50, wave: 20, review: 20, walk: 10 },
-  wave: { idle: 70, sit: 15, review: 15 },
-  review: { idle: 70, sit: 20, walk: 10 },
+  idle: { idle: 40, walk: 25, sit: 15, wave: 10, review: 8, hop: 2 },
+  walk: { idle: 50, sit: 30, review: 20 },
+  sit: { idle: 55, wave: 25, review: 20 },
+  wave: { idle: 75, review: 25 },
+  review: { idle: 70, sit: 30 },
 };
 
 export class BehaviorPlanner {
@@ -36,7 +36,7 @@ export class BehaviorPlanner {
   ) {
     this.cancel("reschedule");
 
-    let baseDelay = Math.random() * 8000 + 12000;
+    let baseDelay = Math.random() * 16000 + 12000; // 12s ~ 28s
     if (settings.ambientBehaviorFrequency === "low") baseDelay *= 1.5;
     if (settings.ambientBehaviorFrequency === "high") baseDelay *= 0.7;
 
@@ -55,12 +55,12 @@ export class BehaviorPlanner {
     const now = performance.now();
     const timeSinceUserMs = now - this.lastUserInteractionAt;
 
-    // 上下文法则：用户刚互动完 0~5 秒内，不随机走开或沮丧，优先 idle / wave
+    // 上下文法则：用户刚互动完 0~5 秒内，绝对不自动走开或沮丧，优先 idle
     if (timeSinceUserMs < 5000) {
-      console.log(`[behavior-planner] user interaction fresh (${(timeSinceUserMs / 1000).toFixed(1)}s ago), staying idle/wave`);
+      console.log(`[behavior-planner] user interaction fresh (${(timeSinceUserMs / 1000).toFixed(1)}s ago), staying idle`);
       return {
         id: `plan-${now}`,
-        logicalAction: Math.random() > 0.4 ? "idle" : "wave",
+        logicalAction: "idle",
         durationMs: 3000
       };
     }
@@ -68,23 +68,24 @@ export class BehaviorPlanner {
     const last = context.lastActionId || "idle";
     const transitions = ACTION_TRANSITIONS[last] || ACTION_TRANSITIONS.idle;
 
-    // 复制基础权重矩阵
     const weights: Record<string, number> = { ...transitions };
+
+    // 绝对禁止 failed 进入随机动作池！
+    delete weights.fail;
+    delete weights.failed;
 
     // 应用边缘避让法则
     if (context.nearLeftEdge && weights.walk) {
-      weights.walk *= 0.5;
+      weights.walk *= 0.3;
     }
     if (context.nearRightEdge && weights.walk) {
-      weights.walk *= 0.5;
+      weights.walk *= 0.3;
     }
 
-    // 自动位移关闭控制
     if (!settings.autoMovementEnabled && weights.walk) {
       weights.walk = 0;
     }
 
-    // 可用动作过滤
     for (const act of Object.keys(weights)) {
       if (act !== "idle" && !availableActions.includes(act)) {
         weights[act] = 0;
