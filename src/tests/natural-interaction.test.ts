@@ -299,6 +299,26 @@ describe('Natural Interaction System (Phase 7.1 Reset)', () => {
       expect(plan.logicalAction).toBe('run');
       vi.restoreAllMocks();
     });
+
+    it('offers lookAround only when capability filtering includes it and applies cooldown', () => {
+      const planner = new BehaviorPlanner(vi.fn());
+      vi.spyOn(Math, 'random').mockReturnValue(0.999);
+      const context = {
+        idleDurationMs: 0, sinceLastUserInteractionMs: Infinity, lastActionId: 'idle', recentActions: [],
+        facing: 'right' as const, nearLeftEdge: false, nearRightEdge: false, currentHour: 12
+      };
+      const selected = planner.planNextBehavior(DEFAULT_SETTINGS, context, [
+        'idle', 'walk', 'sit', 'wave', 'review', 'hop', 'run', 'lookAround'
+      ]);
+      expect(selected.logicalAction).toBe('lookAround');
+
+      planner.recordActionCompleted('lookAround', performance.now());
+      const cooledDown = planner.planNextBehavior(DEFAULT_SETTINGS, context, [
+        'idle', 'walk', 'sit', 'wave', 'review', 'hop', 'run', 'lookAround'
+      ]);
+      expect(cooledDown.logicalAction).not.toBe('lookAround');
+      vi.restoreAllMocks();
+    });
   });
 
   describe('DialogueDirector', () => {

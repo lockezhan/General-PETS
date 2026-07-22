@@ -54,20 +54,23 @@ export function getAmbientPresentation(animation: string): ActionPresentationPro
   const canonical = ({ happy: 'waving', surprised: 'jumping', shy: 'review' } as Record<string, string>)[animation] ?? animation;
   if (canonical === 'waving') {
     return {
-      repeatCount: Math.random() < 0.5 ? 1 : 2,
-      minimumVisibleMs: 1300
+      repeatCount: 1,
+      minimumVisibleMs: 2200,
+      holdAfterMs: 350,
     };
   }
   if (canonical === 'review') {
     return {
       repeatCount: 1,
-      minimumVisibleMs: 1500,
-      holdAfterMs: 350
+      minimumVisibleMs: 2600,
+      holdAfterMs: 550
     };
   }
   if (canonical === 'jumping') {
-    return { repeatCount: 1, minimumVisibleMs: 1300 };
+    return { repeatCount: 1, minimumVisibleMs: 2000, holdAfterMs: 400 };
   }
+  if (canonical === 'waiting') return { loop: true, durationRangeMs: { min: 4500, max: 8000 } };
+  if (canonical === 'running') return { loop: true, durationRangeMs: { min: 2600, max: 4200 } };
   return { ...(CODEX_ACTION_PRESENTATION[canonical] ?? {}) };
 }
 

@@ -14,6 +14,8 @@ export type PetState = BuiltInPetState | string;
 
 export interface AnimationTiming {
   frameDurationMs: number;
+  /** Logical playback order. Values remain atlas/frame-array indices. */
+  frameSequence?: number[];
   frameDurationsMs?: number[];
   lastFrameDurationMs?: number;
   loopDelayMs?: number;

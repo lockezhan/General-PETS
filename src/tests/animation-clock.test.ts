@@ -219,4 +219,43 @@ describe('AnimationClock', () => {
 
     clock.destroy();
   });
+
+  it('plays a validated logical frame sequence while reporting actual atlas frames', () => {
+    const frames: number[] = [];
+    const clock = new AnimationClock({
+      onFrameChange: (idx) => frames.push(idx),
+      onComplete: () => {}
+    });
+    clock.play('sequenced', {
+      frameDurationMs: 100,
+      frameSequence: [0, 1, 2, 3, 2, 1, 0],
+      loop: false
+    }, 4, 1);
+
+    vi.advanceTimersByTime(600);
+    expect(frames).toEqual([0, 1, 2, 3, 2, 1, 0]);
+    expect(clock.getDebugStats()).toMatchObject({
+      logicalFrameIndex: 6,
+      actualFrameIndex: 0,
+      frameIndex: 0,
+    });
+    clock.destroy();
+  });
+
+  it('falls back to atlas order for an invalid or empty frame sequence', () => {
+    const frames: number[] = [];
+    const clock = new AnimationClock({
+      onFrameChange: (idx) => frames.push(idx),
+      onComplete: () => {}
+    });
+    clock.play('invalid-sequence', {
+      frameDurationMs: 100,
+      frameSequence: [0, 4],
+      loop: false
+    }, 4, 1);
+
+    vi.advanceTimersByTime(300);
+    expect(frames).toEqual([0, 1, 2, 3]);
+    clock.destroy();
+  });
 });

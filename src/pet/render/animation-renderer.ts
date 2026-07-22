@@ -15,12 +15,30 @@ export interface DistanceDrivenPlayback {
   frameOffset?: number;
 }
 
+export interface AtlasFrameReference {
+  row: number;
+  column: number;
+  durationMs?: number;
+  source?: "primary" | "extras";
+}
+
+export interface FramePathPlaybackOptions {
+  frames: AtlasFrameReference[];
+  loop?: boolean;
+  onComplete?: () => void;
+  speedMultiplier?: number;
+}
+
 export interface AnimationRenderer {
   load(): Promise<void>;
 
   hasAnimation(name: string): boolean;
 
   play(name: string, options?: AnimationPlaybackOptions): Promise<void> | void;
+
+  playStaticFrame?(row: number, column: number, source?: "primary" | "extras"): boolean;
+
+  playFramePath?(options: FramePathPlaybackOptions): boolean;
 
   /**
    * 进入位移驱动模式。

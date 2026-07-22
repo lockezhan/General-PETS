@@ -1,6 +1,6 @@
 import { CharacterLoader } from './character-loader';
 import { resolveDirectionalAnimation, HorizontalDirection } from './render/directional-animation-resolver';
-import { AnimationRenderer } from './render/animation-renderer';
+import { AnimationRenderer, AtlasFrameReference } from './render/animation-renderer';
 import { FrameSequenceRenderer } from './render/frame-sequence-renderer';
 import { CodexAtlasRenderer } from './render/codex-atlas-renderer';
 import { InteractionController, InteractionControllerCallbacks } from './interaction-controller';
@@ -31,6 +31,8 @@ import { calculatePetVisualLayout } from './visual-layout';
 import { migratePetSettings } from '../shared/settings-migration';
 import { ManualWindowDragController, ManualDragProgress, ManualDragSummary } from './manual-window-drag-controller';
 import { getAmbientDialogueProbability, getAmbientPresentation, getInteractionPresentation, randomDuration } from './natural/action-presentation-profiles';
+import type { LookDirectionName } from './codex/codex-types';
+import { CODEX_ATLAS_CONTRACTS } from './codex/codex-atlas-contract';
 
 export const GAIT_TEST_DISTANCE_LOGICAL_PX = 288;
 export const GAIT_CALIBRATION_STRIDES = [48, 60, 72, 84, 96, 120] as const;
@@ -61,6 +63,28 @@ export const DEFAULT_CODEX_LOCOMOTION = {
   runFrameCount: 6,
 };
 
+export interface AmbientSession {
+  id: number;
+  logicalAction: PlannedBehavior['logicalAction'];
+  animation: string;
+  startedAt: number;
+  status: 'starting' | 'playing' | 'holding' | 'completed' | 'cancelled';
+  completionTimer: number | null;
+  watchdogTimer: number | null;
+}
+
+const AMBIENT_WATCHDOG_MS: Record<PlannedBehavior['logicalAction'], number> = {
+  idle: 12000,
+  walk: 14000,
+  sit: 10000,
+  wave: 6000,
+  hop: 5500,
+  fail: 6500,
+  run: 7000,
+  review: 6500,
+  lookAround: 8000,
+};
+
 export class PetController {
   private loader: CharacterLoader;
   private player!: AnimationRenderer;
@@ -84,7 +108,11 @@ export class PetController {
 
   private bubbleTimer: number | null = null;
   private sleepTimer: number | null = null;
-  private sitTimer: number | null = null;
+  private ambientSession: AmbientSession | null = null;
+  private ambientSessionId = 0;
+  private ambientReschedulePending = false;
+  private ambientRetryTimer: number | null = null;
+  private windowVisible = true;
   
   private manualDragController: ManualWindowDragController;
   private settings: PetSettings = { ...DEFAULT_SETTINGS };
@@ -93,7 +121,6 @@ export class PetController {
   private ambientDialogueDirector = new DialogueDirector();
   private lastAmbientDialogueAt = Number.NEGATIVE_INFINITY;
   private ambientDialogueCooldownMs = 0;
-  private activeAmbientAction: PlannedBehavior['logicalAction'] | null = null;
   private interactionManifest: InteractionManifest | null = null;
 
   private isDraggingWindow = false;
@@ -219,17 +246,7 @@ export class PetController {
     );
 
     listen<boolean>("window-visibility-changed", (event) => {
-      const visible = event.payload;
-      if (!visible) {
-        console.log("[pet] window hidden, pausing motion/scheduler");
-        this.motionController.cancelActiveMotion("window hidden");
-        this.behaviorPlanner.cancel("window hidden");
-      } else {
-        console.log("[pet] window shown, rescheduling");
-        this.floorController.invalidateCache();
-        this.behaviorPlanner.cancel("window shown reset");
-        this.startIdleTimers();
-      }
+      this.handleWindowVisibilityChanged(event.payload);
     });
 
     listen(EVENT_RESET_POSITION, () => {
@@ -288,6 +305,7 @@ export class PetController {
       await this.loader.load();
       this.recreateRenderer();
       await this.player.load();
+      this.logPetCapabilities();
       await this.loadDialogues(this.settings.characterId);
       await this.loadInteractions(this.settings.characterId);
     } catch (e) {
@@ -327,7 +345,15 @@ export class PetController {
       const rootUrl = convertFileSrc(source.rootPath);
       const manifest = this.loader.getConfig();
       const spritesheetUrl = `${rootUrl}/${manifest?.spritesheetPath || 'spritesheet.webp'}`;
-      this.player = new CodexAtlasRenderer(this.petImage, spritesheetUrl, this.loader.getAdapterConfig()!);
+      const extras = this.loader.getExtrasConfig();
+      const extrasSpritesheetUrl = extras ? `${rootUrl}/${extras.spritesheetPath}` : null;
+      this.player = new CodexAtlasRenderer(
+        this.petImage,
+        spritesheetUrl,
+        this.loader.getAdapterConfig()!,
+        extras,
+        extrasSpritesheetUrl,
+      );
     } else {
       this.player = new FrameSequenceRenderer(this.loader, this.petImage);
     }
@@ -353,6 +379,7 @@ export class PetController {
         await this.loader.load();
         this.recreateRenderer();
         await this.player.load();
+        this.logPetCapabilities();
         await this.loadDialogues(newSettings.characterId);
         await this.loadInteractions(newSettings.characterId);
         this.trySetState('idle');
@@ -530,15 +557,102 @@ export class PetController {
   }
 
   private handleBehaviorPlan(plan: PlannedBehavior) {
-    if (this.stateMachine.getState() !== 'idle' || this.isDraggingWindow) return;
-    this.clearTimers();
+    if (!this.canStartAmbientBehavior() || this.ambientSession) {
+      this.deferAmbientScheduling(`plan blocked state=${this.stateMachine.getState()}`);
+      return;
+    }
+    this.beginAmbientBehavior(plan);
+  }
 
-    if (plan.logicalAction === 'walk' && plan.targetDirection) {
-      this.beginDirectionalWalk(plan.targetDirection, plan.durationMs || 5000, "autonomous");
+  private beginAmbientBehavior(plan: PlannedBehavior): void {
+    if (this.ambientSession) {
+      this.deferAmbientScheduling('session already active');
+      return;
+    }
+    this.cancelBehaviorPlanTimer('ambient session starting');
+    this.cancelSleepTimer();
+    const animation = plan.logicalAction === 'lookAround'
+      ? 'lookAround'
+      : plan.logicalAction === 'walk'
+        ? (plan.targetDirection ? `walk-${plan.targetDirection}` : 'walk')
+        : (this.resolveAmbientAnimation(plan.logicalAction) ?? 'unavailable');
+    const sessionId = ++this.ambientSessionId;
+    const session: AmbientSession = {
+      id: sessionId,
+      logicalAction: plan.logicalAction,
+      animation,
+      startedAt: performance.now(),
+      status: 'starting',
+      completionTimer: null,
+      watchdogTimer: null,
+    };
+    this.ambientSession = session;
+    this.ambientReschedulePending = false;
+    this.behaviorPlanner.recordActionStarted(plan.logicalAction);
+    session.watchdogTimer = window.setTimeout(() => {
+      const current = this.ambientSession;
+      if (!current || current.id !== sessionId) return;
+      console.warn(
+        `[ambient-watchdog]\n` +
+        `session=${current.id}\n` +
+        `action=${current.logicalAction}\n` +
+        `animation=${current.animation}\n` +
+        `state=${this.stateMachine.getState()}\n` +
+        `currentAction=${this.actionDirector.getCurrentActionLabel() ?? 'none'}\n` +
+        `playbackMode=${this.player.getPlaybackMode()}`
+      );
+      this.actionDirector.clearCurrentAction('ambient watchdog');
+      this.finishAmbientBehavior(sessionId, 'watchdog timeout');
+    }, AMBIENT_WATCHDOG_MS[plan.logicalAction]);
+
+    this.enterIdleVisualWithoutScheduling('ambient lead-in');
+    const leadInMs = randomDuration({ min: 150, max: 350 });
+    session.completionTimer = window.setTimeout(() => {
+      if (!this.ambientSession || this.ambientSession.id !== sessionId) return;
+      this.ambientSession.completionTimer = null;
+      this.startAmbientSessionAction(sessionId, plan);
+    }, leadInMs);
+  }
+
+  private startAmbientSessionAction(sessionId: number, plan: PlannedBehavior): void {
+    const session = this.ambientSession;
+    if (!session || session.id !== sessionId) return;
+    if (!this.canStartAmbientBehavior()) {
+      this.finishAmbientBehavior(sessionId, 'blocked during lead-in', {
+        status: 'cancelled', enterIdle: false, scheduleNext: false,
+      });
+      this.deferAmbientScheduling('blocked during lead-in');
+      return;
+    }
+    session.status = 'playing';
+
+    if (plan.logicalAction === 'walk') {
+      if (!plan.targetDirection) {
+        this.finishAmbientBehavior(sessionId, 'walk direction unavailable');
+        return;
+      }
+      void this.beginDirectionalWalk(
+        plan.targetDirection,
+        plan.durationMs || 5000,
+        'autonomous',
+        sessionId,
+      );
       return;
     }
 
-    const anim = this.resolveAmbientAnimation(plan.logicalAction) ?? 'idle';
+    if (plan.logicalAction === 'lookAround') {
+      if (!this.playLookAround(sessionId)) {
+        this.finishAmbientBehavior(sessionId, 'look around renderer rejected path');
+      }
+      return;
+    }
+
+    const anim = this.resolveAmbientAnimation(plan.logicalAction);
+    if (!anim) {
+      this.finishAmbientBehavior(sessionId, `animation unavailable for ${plan.logicalAction}`);
+      return;
+    }
+    session.animation = anim;
     const presentation = getAmbientPresentation(anim);
     const isTimedLoop = plan.logicalAction === 'idle' || plan.logicalAction === 'sit' || plan.logicalAction === 'run';
     this.visualCoordinator.setReactionState(anim as any, 'ambient');
@@ -552,43 +666,79 @@ export class PetController {
       minimumVisibleMs: presentation.minimumVisibleMs,
       holdAfterMs: presentation.holdAfterMs,
       onComplete: isTimedLoop ? undefined : () => {
-        this.completeAmbientBehavior(plan.logicalAction, `behavior ${anim} completed`);
+        this.beginAmbientSettle(sessionId, `behavior ${anim} completed`);
       }
     });
     if (!accepted) {
-      this.startIdleTimers();
+      this.finishAmbientBehavior(sessionId, `ActionDirector rejected ${anim}`);
       return;
     }
 
-    this.activeAmbientAction = plan.logicalAction;
-    this.behaviorPlanner.recordActionStarted(plan.logicalAction);
     this.tryShowAmbientDialogue(plan.logicalAction);
-
     if (isTimedLoop) {
       const durationMs = plan.logicalAction === 'idle'
-        ? (plan.durationMs ?? randomDuration({ min: 3000, max: 6000 }))
-        : randomDuration(presentation.durationRangeMs ?? { min: 3000, max: 5000 });
-      this.sitTimer = window.setTimeout(() => {
-        this.sitTimer = null;
-        this.completeAmbientBehavior(plan.logicalAction, `timed behavior ${anim} completed`);
+        ? (plan.durationMs ?? randomDuration({ min: 4500, max: 9000 }))
+        : randomDuration(presentation.durationRangeMs ?? { min: 4500, max: 8000 });
+      session.completionTimer = window.setTimeout(() => {
+        if (!this.ambientSession || this.ambientSession.id !== sessionId) return;
+        this.ambientSession.completionTimer = null;
+        this.beginAmbientSettle(sessionId, `timed behavior ${anim} completed`);
       }, durationMs);
     }
   }
 
-  private completeAmbientBehavior(logicalAction: PlannedBehavior['logicalAction'], reason: string): void {
-    if (this.activeAmbientAction === logicalAction) this.activeAmbientAction = null;
-    this.behaviorPlanner.recordActionCompleted(logicalAction);
-    if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
-      this.requestIdleVisual(reason);
+  private beginAmbientSettle(sessionId: number, reason: string): void {
+    const session = this.ambientSession;
+    if (!session || session.id !== sessionId || session.status === 'holding') return;
+    session.status = 'holding';
+    this.actionDirector.clearCurrentAction(`ambient settle: ${reason}`);
+    this.enterIdleVisualWithoutScheduling('ambient settle');
+    session.completionTimer = window.setTimeout(() => {
+      if (!this.ambientSession || this.ambientSession.id !== sessionId) return;
+      this.ambientSession.completionTimer = null;
+      this.finishAmbientBehavior(sessionId, reason);
+    }, randomDuration({ min: 300, max: 700 }));
+  }
+
+  private finishAmbientBehavior(
+    sessionId: number,
+    reason: string,
+    options: {
+      status?: 'completed' | 'cancelled';
+      enterIdle?: boolean;
+      scheduleNext?: boolean;
+    } = {},
+  ): void {
+    const session = this.ambientSession;
+    if (!session || session.id !== sessionId) return;
+    if (session.completionTimer !== null) clearTimeout(session.completionTimer);
+    if (session.watchdogTimer !== null) clearTimeout(session.watchdogTimer);
+    session.completionTimer = null;
+    session.watchdogTimer = null;
+    session.status = options.status ?? 'completed';
+    this.behaviorPlanner.recordActionCompleted(session.logicalAction);
+    this.ambientSession = null;
+    this.visualCoordinator.setReactionState('idle', 'ambient');
+
+    const enterIdle = options.enterIdle ?? true;
+    const scheduleNext = options.scheduleNext ?? true;
+    if (enterIdle) this.enterIdleVisualWithoutScheduling(reason);
+    if (scheduleNext) this.startIdleTimers();
+    if (import.meta.env.DEV) {
+      console.info(`[ambient] finished session=${sessionId} action=${session.logicalAction} status=${session.status} reason=${reason}`);
     }
   }
 
-  private cancelAmbientBehavior(reason: string): void {
-    if (this.activeAmbientAction) {
-      this.behaviorPlanner.recordActionCompleted(this.activeAmbientAction);
-      this.activeAmbientAction = null;
+  private cancelAmbientBehavior(reason: string, reschedulePending: boolean = true): void {
+    this.cancelBehaviorPlanTimer(reason);
+    this.cancelSleepTimer();
+    const sessionId = this.ambientSession?.id;
+    if (sessionId !== undefined) {
+      this.finishAmbientBehavior(sessionId, reason, {
+        status: 'cancelled', enterIdle: false, scheduleNext: false,
+      });
     }
-    this.clearTimers();
+    if (reschedulePending) this.deferAmbientScheduling(reason);
     if (import.meta.env.DEV) console.info(`[ambient] cancelled reason=${reason}`);
   }
 
@@ -707,6 +857,11 @@ export class PetController {
   }
 
   private requestIdleVisual(reason: string): void {
+    this.enterIdleVisualWithoutScheduling(reason);
+    this.startIdleTimers();
+  }
+
+  private enterIdleVisualWithoutScheduling(reason: string): void {
     this.actionDirector.clearCurrentAction(`enter idle: ${reason}`);
     this.visualCoordinator.clearMotionState(reason);
     this.visualCoordinator.setReactionState('idle', 'ambient');
@@ -718,7 +873,73 @@ export class PetController {
       source: 'behavior',
       loop: true
     });
-    this.startIdleTimers();
+  }
+
+  private canStartAmbientBehavior(): boolean {
+    const state = this.stateMachine.getState();
+    const active = this.actionDirector.getCurrentRequest();
+    return this.windowVisible &&
+      !this.isDraggingWindow &&
+      state === 'idle' &&
+      (!active || active.priority === 'ambient');
+  }
+
+  private deferAmbientScheduling(reason: string): void {
+    this.ambientReschedulePending = true;
+    if (this.ambientRetryTimer !== null || !this.windowVisible) return;
+    this.ambientRetryTimer = window.setTimeout(() => {
+      this.ambientRetryTimer = null;
+      if (!this.ambientReschedulePending || this.ambientSession) return;
+      if (this.canStartAmbientBehavior()) {
+        this.startIdleTimers();
+      } else {
+        this.deferAmbientScheduling('retry still blocked');
+      }
+    }, randomDuration({ min: 800, max: 1600 }));
+    if (import.meta.env.DEV) console.info(`[ambient] reschedule pending reason=${reason}`);
+  }
+
+  private playLookAround(sessionId: number): boolean {
+    const capabilities = this.loader.getCapabilities();
+    if (!capabilities.supportsLookAround || !this.player.playFramePath) return false;
+
+    let frames: AtlasFrameReference[];
+    if (capabilities.lookAroundSource === 'codex-v2') {
+      const directions = this.loader.getAdapterConfig()?.lookDirections;
+      if (!directions) return false;
+      const paths: LookDirectionName[][] = [
+        ['center', 'upperLeft', 'left', 'upperLeft', 'center'],
+        ['center', 'upperRight', 'right', 'lowerRight', 'right', 'upperRight', 'center'],
+      ];
+      const names = paths[Math.random() < 0.5 ? 0 : 1];
+      frames = names.map((name, index) => ({
+        ...directions[name],
+        source: 'primary' as const,
+        durationMs: index === 0 || index === names.length - 1
+          ? randomDuration({ min: 500, max: 900 })
+          : (name === 'left' || name === 'right'
+            ? randomDuration({ min: 700, max: 1200 })
+            : randomDuration({ min: 250, max: 650 })),
+      }));
+    } else {
+      const animation = this.loader.getExtrasConfig()?.animations.lookAround;
+      if (!animation) return false;
+      frames = animation.frameSequence.map((column, index) => ({
+        row: animation.row,
+        column,
+        source: 'extras' as const,
+        durationMs: animation.frameDurationsMs[index],
+      }));
+    }
+
+    this.actionDirector.clearCurrentAction('ambient look around');
+    this.visualCoordinator.setReactionState('idle', 'ambient');
+    return this.player.playFramePath({
+      frames,
+      loop: false,
+      speedMultiplier: 1,
+      onComplete: () => this.beginAmbientSettle(sessionId, 'look around completed'),
+    });
   }
 
   private enterLandingAfterFall(): void {
@@ -777,17 +998,24 @@ export class PetController {
     direction: "left" | "right",
     durationMs: number,
     reason: "test" | "autonomous" | "onEdge",
-    ambientSession: boolean = reason === 'autonomous'
+    ambientSessionId: number | null = null,
   ) {
-    if (this.isDraggingWindow) return;
-    if (reason !== 'onEdge') this.clearTimers();
+    if (this.isDraggingWindow) {
+      if (ambientSessionId !== null) this.finishAmbientBehavior(ambientSessionId, 'walk blocked by drag');
+      return;
+    }
+    if (reason !== 'onEdge') {
+      this.cancelBehaviorPlanTimer('directional walk');
+      this.cancelSleepTimer();
+    }
 
     this.walkRequestId++;
     const currentWalkId = this.walkRequestId;
 
     const floorInfo = await this.floorController.getCurrentFloorInfo();
     if (!floorInfo) {
-      this.startIdleTimers();
+      if (ambientSessionId !== null) this.finishAmbientBehavior(ambientSessionId, 'walk floor unavailable');
+      else this.startIdleTimers();
       return;
     }
 
@@ -811,10 +1039,6 @@ export class PetController {
     });
 
     this.stateMachine.forceState('walk');
-    if (reason === 'autonomous') {
-      this.activeAmbientAction = 'walk';
-      this.behaviorPlanner.recordActionStarted('walk');
-    }
     let committedDistance = 0;
     let commitCount = 0;
 
@@ -828,10 +1052,10 @@ export class PetController {
         if (currentWalkId !== this.walkRequestId) return;
         if (this.settings.edgeBehavior === 'turn') {
           const newDir = direction === 'left' ? 'right' : 'left';
-          this.beginDirectionalWalk(newDir, durationMs, "onEdge", ambientSession);
+          this.beginDirectionalWalk(newDir, durationMs, "onEdge", ambientSessionId);
         } else {
           this.cancelActiveLocomotion("hit edge stop");
-          if (ambientSession) this.completeAmbientBehavior('walk', 'walk hit edge');
+          if (ambientSessionId !== null) this.beginAmbientSettle(ambientSessionId, 'walk hit edge');
           else this.trySetState('idle');
         }
       },
@@ -844,7 +1068,7 @@ export class PetController {
           );
         }
         this.cancelActiveLocomotion("walk complete");
-        if (ambientSession) this.completeAmbientBehavior('walk', 'walk completed');
+        if (ambientSessionId !== null) this.beginAmbientSettle(ambientSessionId, 'walk completed');
         else this.trySetState('idle');
       },
       (progress: MotionProgress) => {
@@ -1086,8 +1310,18 @@ export class PetController {
   }
 
   private startIdleTimers() {
-    this.clearTimers();
-    if (this.stateMachine.getState() !== 'idle') return;
+    this.cancelBehaviorPlanTimer('startIdleTimers');
+    this.cancelSleepTimer();
+    if (this.ambientSession) return;
+    if (!this.canStartAmbientBehavior()) {
+      this.deferAmbientScheduling('idle timers blocked');
+      return;
+    }
+    this.ambientReschedulePending = false;
+    if (this.ambientRetryTimer !== null) {
+      clearTimeout(this.ambientRetryTimer);
+      this.ambientRetryTimer = null;
+    }
     const history = this.behaviorPlanner.getHistory();
     const context: BehaviorContext = {
       idleDurationMs: 0,
@@ -1106,7 +1340,8 @@ export class PetController {
       ...(this.resolveAmbientAnimation('wave') ? ['wave'] : []),
       ...(this.resolveAmbientAnimation('review') ? ['review'] : []),
       ...(this.resolveAmbientAnimation('hop') ? ['hop'] : []),
-      ...(this.settings.autoMovementEnabled && this.resolveAmbientAnimation('run') ? ['run'] : [])
+      ...(this.settings.autoMovementEnabled && this.resolveAmbientAnimation('run') ? ['run'] : []),
+      ...(this.loader.getCapabilities().supportsLookAround ? ['lookAround'] : []),
     ];
     this.behaviorPlanner.scheduleNext(this.settings, context, availableActions);
     
@@ -1120,12 +1355,47 @@ export class PetController {
     }
   }
 
-  private clearTimers() {
-    this.behaviorPlanner?.cancel('clearTimers');
-    if (this.sleepTimer) clearTimeout(this.sleepTimer);
-    if (this.sitTimer) {
-      clearTimeout(this.sitTimer);
-      this.sitTimer = null;
+  private cancelBehaviorPlanTimer(reason: string): void {
+    this.behaviorPlanner?.cancel(reason);
+  }
+
+  private cancelSleepTimer(): void {
+    if (this.sleepTimer !== null) {
+      clearTimeout(this.sleepTimer);
+      this.sleepTimer = null;
+    }
+  }
+
+  private cancelAmbientRetryTimer(): void {
+    if (this.ambientRetryTimer !== null) {
+      clearTimeout(this.ambientRetryTimer);
+      this.ambientRetryTimer = null;
+    }
+  }
+
+  private cancelAllForShutdown(reason: string): void {
+    this.cancelBehaviorPlanTimer(reason);
+    this.cancelSleepTimer();
+    this.cancelAmbientRetryTimer();
+    this.cancelAmbientBehavior(reason, false);
+    this.actionDirector.clearCurrentAction(reason);
+  }
+
+  private handleWindowVisibilityChanged(visible: boolean): void {
+    this.windowVisible = visible;
+    if (!visible) {
+      console.log('[pet] window hidden, pausing motion/scheduler');
+      this.motionController.cancelActiveMotion('window hidden');
+      this.cancelAllForShutdown('window hidden');
+      this.ambientReschedulePending = true;
+      return;
+    }
+    console.log('[pet] window shown, rescheduling');
+    this.floorController.invalidateCache();
+    if (this.stateMachine.getState() === 'idle' && !this.isDraggingWindow) {
+      this.requestIdleVisual('window shown');
+    } else {
+      this.deferAmbientScheduling('window shown while busy');
     }
   }
 
@@ -1143,6 +1413,22 @@ export class PetController {
       return { ...DEFAULT_MOTION_CONFIG, ...manifest.motion };
     }
     return DEFAULT_MOTION_CONFIG;
+  }
+
+  private logPetCapabilities(): void {
+    const adapter = this.loader.getAdapterConfig();
+    if (!adapter) return;
+    const contract = CODEX_ATLAS_CONTRACTS[adapter.spriteVersionNumber];
+    const capabilities = this.loader.getCapabilities();
+    console.info(
+      `[pet-capabilities]\n` +
+      `characterId=${this.loader.getConfig()?.id ?? this.settings.characterId}\n` +
+      `spriteVersion=${adapter.spriteVersionNumber}\n` +
+      `atlasSize=${contract.atlasWidth}x${contract.atlasHeight}\n` +
+      `idleFrames=6\n` +
+      `lookRowsPresent=${adapter.spriteVersionNumber === 2}\n` +
+      `lookFramesNonEmpty=${capabilities.lookAroundSource === 'codex-v2'}`
+    );
   }
 
   private getLocomotionProfile() {

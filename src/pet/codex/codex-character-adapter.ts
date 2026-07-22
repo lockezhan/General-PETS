@@ -1,4 +1,11 @@
-import { CodexAdapterConfig, CodexAnimationMapping } from './codex-types';
+import {
+  CodexAdapterConfig,
+  CodexAnimationMapping,
+  CodexLookDirections,
+  GeneralPetsExtrasConfig,
+  LookDirectionName,
+} from './codex-types';
+import { CODEX_BASE_ANIMATIONS, CodexV1AnimationName } from './codex-atlas-contract';
 
 export const DEFAULT_ANIMATION_MAPPING: CodexAnimationMapping = {
   idle: 'idle',
@@ -106,6 +113,26 @@ export class CodexCharacterAdapter {
       }).catch(() => {});
     }
 
+    const animationSequences: Partial<Record<CodexV1AnimationName, number[]>> = {};
+    if (raw.animationSequences && typeof raw.animationSequences === 'object') {
+      for (const animation of Object.keys(CODEX_BASE_ANIMATIONS) as CodexV1AnimationName[]) {
+        const sequence = raw.animationSequences[animation];
+        if (sequence === undefined) continue;
+        const frameCount = CODEX_BASE_ANIMATIONS[animation].frameCount;
+        if (this.isValidFrameSequence(sequence, frameCount)) {
+          animationSequences[animation] = [...sequence];
+        } else {
+          console.warn(
+            `[codex-adapter] Invalid frame sequence for '${sourcePetId}/${animation}', using atlas order.`
+          );
+        }
+      }
+    }
+
+    const lookDirections = spriteVersionNumber === 2
+      ? this.normalizeLookDirections(raw.lookDirections)
+      : undefined;
+
     return {
       schemaVersion,
       sourceType,
@@ -113,9 +140,75 @@ export class CodexCharacterAdapter {
       spriteVersionNumber,
       render,
       animationMapping,
+      ...(Object.keys(animationSequences).length > 0 ? { animationSequences } : {}),
+      ...(lookDirections ? { lookDirections } : {}),
       locomotion,
       interactionMode,
     };
+  }
+
+  public static normalizeExtrasConfig(raw: unknown): GeneralPetsExtrasConfig | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const value = raw as Record<string, any>;
+    const lookAround = value.animations?.lookAround;
+    if (
+      value.schemaVersion !== 1 ||
+      typeof value.spritesheetPath !== 'string' ||
+      !value.spritesheetPath.trim() ||
+      !Number.isInteger(value.frameWidth) || value.frameWidth <= 0 ||
+      !Number.isInteger(value.frameHeight) || value.frameHeight <= 0 ||
+      !lookAround || !Number.isInteger(lookAround.row) || lookAround.row < 0 ||
+      !Number.isInteger(lookAround.frameCount) || lookAround.frameCount <= 0 ||
+      !this.isValidFrameSequence(lookAround.frameSequence, lookAround.frameCount) ||
+      !Array.isArray(lookAround.frameDurationsMs) ||
+      lookAround.frameDurationsMs.length !== lookAround.frameSequence.length ||
+      lookAround.frameDurationsMs.some((duration: unknown) =>
+        typeof duration !== 'number' || !Number.isFinite(duration) || duration < 40 || duration > 5000
+      )
+    ) {
+      return null;
+    }
+    return {
+      schemaVersion: 1,
+      spritesheetPath: value.spritesheetPath,
+      frameWidth: value.frameWidth,
+      frameHeight: value.frameHeight,
+      animations: {
+        lookAround: {
+          row: lookAround.row,
+          frameCount: lookAround.frameCount,
+          frameSequence: [...lookAround.frameSequence],
+          frameDurationsMs: [...lookAround.frameDurationsMs],
+        },
+      },
+    };
+  }
+
+  private static isValidFrameSequence(value: unknown, frameCount: number): value is number[] {
+    return Array.isArray(value) &&
+      value.length > 0 &&
+      value.length <= 32 &&
+      value.every((index) => Number.isInteger(index) && index >= 0 && index < frameCount);
+  }
+
+  private static normalizeLookDirections(value: unknown): CodexLookDirections | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const names: LookDirectionName[] = [
+      'center', 'up', 'upperRight', 'right', 'lowerRight',
+      'down', 'lowerLeft', 'left', 'upperLeft',
+    ];
+    const normalized = {} as CodexLookDirections;
+    for (const name of names) {
+      const cell = (value as Record<string, any>)[name];
+      if (
+        !cell || !Number.isInteger(cell.row) || !Number.isInteger(cell.column) ||
+        cell.row < 0 || cell.row > 10 || cell.column < 0 || cell.column > 7
+      ) {
+        return undefined;
+      }
+      normalized[name] = { row: cell.row, column: cell.column };
+    }
+    return normalized;
   }
 
   public static async load(rootPath: string, sourcePetId: string): Promise<CodexAdapterConfig> {

@@ -3,19 +3,20 @@ import { PetSettings } from '../../shared/pet-settings';
 
 export interface PlannedBehavior {
   id: string;
-  logicalAction: "idle" | "walk" | "sit" | "wave" | "hop" | "fail" | "run" | "review";
+  logicalAction: "idle" | "walk" | "sit" | "wave" | "hop" | "fail" | "run" | "review" | "lookAround";
   targetDirection?: "left" | "right";
   durationMs?: number;
 }
 
 export const ACTION_TRANSITIONS: Record<string, Record<string, number>> = {
-  idle: { idle: 22, walk: 20, sit: 15, wave: 15, review: 13, hop: 8, run: 7 },
-  walk: { idle: 30, walk: 8, sit: 16, wave: 15, review: 14, hop: 9, run: 8 },
-  sit: { idle: 30, walk: 18, sit: 8, wave: 16, review: 14, hop: 8, run: 6 },
-  wave: { idle: 32, walk: 18, sit: 16, wave: 5, review: 13, hop: 9, run: 7 },
-  review: { idle: 32, walk: 18, sit: 16, wave: 13, review: 5, hop: 9, run: 7 },
-  hop: { idle: 35, walk: 18, sit: 15, wave: 13, review: 12, hop: 1, run: 6 },
-  run: { idle: 35, walk: 12, sit: 16, wave: 14, review: 12, hop: 7, run: 4 },
+  idle: { idle: 22, walk: 20, sit: 15, wave: 15, review: 13, hop: 8, run: 7, lookAround: 6 },
+  walk: { idle: 30, walk: 8, sit: 16, wave: 15, review: 14, hop: 9, run: 8, lookAround: 6 },
+  sit: { idle: 30, walk: 18, sit: 8, wave: 16, review: 14, hop: 8, run: 6, lookAround: 6 },
+  wave: { idle: 32, walk: 18, sit: 16, wave: 5, review: 13, hop: 9, run: 7, lookAround: 6 },
+  review: { idle: 32, walk: 18, sit: 16, wave: 13, review: 5, hop: 9, run: 7, lookAround: 6 },
+  hop: { idle: 35, walk: 18, sit: 15, wave: 13, review: 12, hop: 1, run: 6, lookAround: 6 },
+  run: { idle: 35, walk: 12, sit: 16, wave: 14, review: 12, hop: 7, run: 4, lookAround: 6 },
+  lookAround: { idle: 35, walk: 18, sit: 15, wave: 13, review: 12, hop: 7, run: 6, lookAround: 0 },
 };
 
 export const AMBIENT_DELAY_RANGES = {
@@ -25,7 +26,7 @@ export const AMBIENT_DELAY_RANGES = {
 } as const;
 
 export class BehaviorPlanner {
-  private timer: number | null = null;
+  private behaviorPlanTimer: number | null = null;
   private onPlanReady: (plan: PlannedBehavior) => void;
   private lastUserInteractionAt: number = Number.NEGATIVE_INFINITY;
   private lastActionId = 'idle';
@@ -52,6 +53,9 @@ export class BehaviorPlanner {
     if (actionId === 'wave' || actionId === 'review') {
       this.actionCooldownUntil.set(actionId, now + 12000);
     }
+    if (actionId === 'lookAround') {
+      this.actionCooldownUntil.set(actionId, now + 20000 + Math.random() * 20000);
+    }
   }
 
   public getHistory(): { lastActionId: string; recentActions: string[] } {
@@ -72,8 +76,8 @@ export class BehaviorPlanner {
     const range = AMBIENT_DELAY_RANGES[settings.ambientBehaviorFrequency];
     const baseDelay = range.min + Math.random() * (range.max - range.min);
 
-    this.timer = window.setTimeout(() => {
-      this.timer = null;
+    this.behaviorPlanTimer = window.setTimeout(() => {
+      this.behaviorPlanTimer = null;
       const plan = this.planNextBehavior(settings, context, availableActions);
       this.onPlanReady(plan);
     }, baseDelay);
@@ -119,6 +123,9 @@ export class BehaviorPlanner {
       if ((this.actionCooldownUntil.get(action) ?? 0) > now && weights[action]) {
         weights[action] *= 0.3;
       }
+    }
+    if ((this.actionCooldownUntil.get('lookAround') ?? 0) > now || timeSinceUserMs < 8000) {
+      weights.lookAround = 0;
     }
 
     // 应用边缘避让法则
@@ -171,16 +178,20 @@ export class BehaviorPlanner {
       durationMs: selectedAction === "walk"
         ? Math.random() * 5000 + 4000
         : selectedAction === 'idle'
-          ? Math.random() * 3000 + 3000
+          ? Math.random() * 4500 + 4500
           : undefined
     };
   }
 
   public cancel(reason?: string) {
-    if (this.timer !== null) {
+    if (this.behaviorPlanTimer !== null) {
       if (reason) console.log(`[behavior-planner] cancelled reason=${reason}`);
-      clearTimeout(this.timer);
-      this.timer = null;
+      clearTimeout(this.behaviorPlanTimer);
+      this.behaviorPlanTimer = null;
     }
+  }
+
+  public hasScheduledPlan(): boolean {
+    return this.behaviorPlanTimer !== null;
   }
 }

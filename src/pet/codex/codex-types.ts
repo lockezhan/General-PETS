@@ -71,6 +71,46 @@ export interface CodexAnimationMapping {
   review?: CodexV1AnimationName;
 }
 
+export type LookDirectionName =
+  | "center"
+  | "up"
+  | "upperRight"
+  | "right"
+  | "lowerRight"
+  | "down"
+  | "lowerLeft"
+  | "left"
+  | "upperLeft";
+
+export interface AtlasCellReference {
+  row: number;
+  column: number;
+}
+
+export type CodexLookDirections = Record<LookDirectionName, AtlasCellReference>;
+
+export interface GeneralPetsExtrasAnimation {
+  row: number;
+  frameCount: number;
+  frameSequence: number[];
+  frameDurationsMs: number[];
+}
+
+export interface GeneralPetsExtrasConfig {
+  schemaVersion: 1;
+  spritesheetPath: string;
+  frameWidth: number;
+  frameHeight: number;
+  animations: {
+    lookAround?: GeneralPetsExtrasAnimation;
+  };
+}
+
+export interface CharacterCapabilities {
+  supportsLookAround: boolean;
+  lookAroundSource: "codex-v2" | "general-pets-extras" | null;
+}
+
 export interface CodexAdapterConfig {
   schemaVersion: number;
   sourceType: "codex-v1";
@@ -82,6 +122,8 @@ export interface CodexAdapterConfig {
     defaultScale: number;
   };
   animationMapping: CodexAnimationMapping;
+  animationSequences?: Partial<Record<CodexV1AnimationName, number[]>>;
+  lookDirections?: CodexLookDirections;
   locomotion?: {
     walkStrideLengthPx: number;
     dragStrideLengthPx: number;
