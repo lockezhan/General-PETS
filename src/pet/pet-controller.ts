@@ -23,6 +23,8 @@ import { MotionController, MotionProgress } from './motion-controller';
 import { BehaviorScheduler, AutonomousActionDefinition, DEFAULT_CODEX_AUTONOMOUS_ACTIONS } from './behavior-scheduler';
 import { InteractionManifest } from './interaction/interaction-types';
 import { validateInteractions } from './character-validator';
+import { DEFAULT_CODEX_HIT_AREAS } from './natural/natural-types';
+import { getDialogueDurationMs } from './natural/dialogue-director';
 
 export interface WalkDebugSnapshot {
   requestId: number;
@@ -492,19 +494,7 @@ export class PetController {
     if (!this.interactionManifest) {
       this.interactionManifest = {
         schemaVersion: 1,
-        hitAreas: [
-          {
-            id: "body",
-            name: "身体",
-            shape: "rect",
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-            priority: 1,
-            draggable: true
-          }
-        ],
+        hitAreas: DEFAULT_CODEX_HIT_AREAS as any,
         rules: [
           {
             id: "click-waving",
@@ -1080,9 +1070,10 @@ export class PetController {
     this.bubble.classList.add('is-visible');
     
     if (this.bubbleTimer) clearTimeout(this.bubbleTimer);
+    const durationMs = getDialogueDurationMs(text);
     this.bubbleTimer = window.setTimeout(() => {
       this.bubble.classList.remove('is-visible');
-    }, 2000);
+    }, durationMs);
   }
 
   private startIdleTimers() {

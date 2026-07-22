@@ -1,7 +1,7 @@
 import { PetSettings } from "./pet-settings";
 
 export const DEFAULT_SETTINGS: PetSettings = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   characterId: 'default',
   scale: 1,
   alwaysOnTop: true,
@@ -15,5 +15,10 @@ export const DEFAULT_SETTINGS: PetSettings = {
   edgeBehavior: "turn",
   interactionEnabled: true,
   hitAreaDebugEnabled: false,
-  animationSpeedMultiplier: 1.0
+  animationSpeedMultiplier: 1.0,
+
+  naturalInteractionEnabled: true,
+  hoverPettingEnabled: false,
+  dialogueFrequency: "normal",
+  ambientBehaviorFrequency: "normal"
 };

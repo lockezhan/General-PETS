@@ -1,5 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { InteractionEventType, PointerSession, GesturePhase } from './interaction-types';
+import { StrokeRecognizer } from '../natural/stroke-recognizer';
+import { NaturalPointerSession, InteractionRole } from '../natural/natural-types';
 
 const DRAG_THRESHOLD_PX = 6;
 const LONG_PRESS_MS = 800;
@@ -11,10 +13,13 @@ export interface RecognizerCallbacks {
   onEvent: (event: InteractionEventType, areaId: string | null, clientX: number, clientY: number) => void;
   onDragStart: (areaId: string | null, initialDirection: "left" | "right" | null) => void;
   onDragEnd: (areaId: string | null) => void;
-  findArea: (clientX: number, clientY: number) => { id: string; draggable?: boolean } | null;
-  /** 是否允许触发互动事件（singleClick/doubleClick/longPress/rapidClick）*/
+  findArea: (clientX: number, clientY: number) => { 
+    id: string; 
+    draggable?: boolean;
+    interactionRole?: InteractionRole;
+    acceptsStroke?: boolean;
+  } | null;
   isInteractionEnabled: () => boolean;
-  /** 是否允许拖动（draggable 区域才可拖动，此开关全局控制）*/
   isDragEnabled: () => boolean;
   onPressStart?: () => void;
   onPressCancel?: () => void;
@@ -24,6 +29,8 @@ export class InteractionRecognizer {
   private element: HTMLElement;
   private callbacks: RecognizerCallbacks;
   private session: PointerSession | null = null;
+  private naturalSession: NaturalPointerSession | null = null;
+  private strokeRecognizer: StrokeRecognizer;
   private clickQueue: Array<{ timestamp: number; areaId: string | null }> = [];
   private singleClickTimer: number | null = null;
   private longPressTimer: number | null = null;
@@ -31,6 +38,7 @@ export class InteractionRecognizer {
   constructor(element: HTMLElement, callbacks: RecognizerCallbacks) {
     this.element = element;
     this.callbacks = callbacks;
+    this.strokeRecognizer = new StrokeRecognizer();
     this.bindEvents();
   }
 
@@ -79,22 +87,52 @@ export class InteractionRecognizer {
   }
 
   private handlePointerDown = (e: PointerEvent) => {
-    if (e.button !== 0) return; // 仅左键
+    if (e.button !== 0) return;
 
     const area = this.callbacks.findArea(e.clientX, e.clientY);
-    if (!area) return; // 未命中
+    if (!area) return;
 
     const interactionOk = this.callbacks.isInteractionEnabled();
     const dragOk = this.callbacks.isDragEnabled();
     if (!interactionOk && !dragOk) return;
 
-    console.log(`[gesture] pointerdown area=${area.id} interaction=${interactionOk} drag=${dragOk}`);
+    // 区域角色定位：只有 pickup 或显示包含 draggable 的区域才支持拖动
+    const role: InteractionRole = area.interactionRole || (area.draggable ? "pickup" : "touch");
+    const isDraggable = (role === "pickup" || role === "touch-and-pickup") && area.draggable !== false && dragOk;
+
+    console.log(`[gesture] pointerdown area=${area.id} role=${role} draggable=${isDraggable}`);
 
     try {
       this.element.setPointerCapture(e.pointerId);
     } catch (err) {
       // ignore
     }
+
+    const now = performance.now();
+
+    this.naturalSession = {
+      pointerId: e.pointerId,
+      areaId: area.id,
+      interactionRole: role,
+      acceptsStroke: area.acceptsStroke !== false,
+      draggable: isDraggable,
+      startedAt: now,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      totalPathLength: 0,
+      directDistance: 0,
+      directionReversals: 0,
+      lastAngle: null,
+      averageSpeed: 0,
+      maxSpeed: 0,
+      strokeCommitted: false,
+      pickupCommitted: false,
+      longPressEligible: false,
+      longPressCommitted: false,
+      cancelled: false
+    };
 
     this.session = {
       startScreenX: e.screenX,
@@ -103,8 +141,8 @@ export class InteractionRecognizer {
       startClientY: e.clientY,
       pointerId: e.pointerId,
       areaId: area.id,
-      draggable: area.draggable !== false && dragOk,
-      startedAt: performance.now(),
+      draggable: isDraggable,
+      startedAt: now,
       maxDistance: 0,
       phase: 'pending' as GesturePhase,
       longPressEligible: false,
@@ -122,9 +160,10 @@ export class InteractionRecognizer {
         if (
           this.session &&
           this.session.phase === 'pending' &&
-          !this.session.cancelled
+          !this.session.cancelled &&
+          (!this.naturalSession || !this.naturalSession.strokeCommitted)
         ) {
-          console.log(`[gesture] longPressEligible set (will commit on pointerup)`);
+          console.log(`[gesture] longPressEligible set`);
           this.session.longPressEligible = true;
           this.session.phase = 'longPressEligible';
           (this.session as any)._longPressClientX = capturedClientX;
@@ -146,13 +185,27 @@ export class InteractionRecognizer {
       this.session.maxDistance = distance;
     }
 
-    if (distance >= DRAG_THRESHOLD_PX) {
-      console.log(`[gesture] drag-threshold distance=${distance.toFixed(1)}px`);
+    const now = performance.now();
 
+    // 1. 抚摸分析
+    if (this.naturalSession) {
+      this.strokeRecognizer.updateMove(this.naturalSession, e.clientX, e.clientY, now);
+
+      if (this.naturalSession.strokeCommitted && !this.session.nativeDragRequested) {
+        this.clearLongPressTimer();
+        this.clearSingleClickTimer();
+        this.callbacks.onEvent("stroke", this.session.areaId, e.clientX, e.clientY);
+      }
+    }
+
+    // 2. 拖拽提起判定（严格限制：只有可拖拽区域才触发原生拖动）
+    if (distance >= DRAG_THRESHOLD_PX) {
       this.clearLongPressTimer();
       this.clearSingleClickTimer();
 
       if (this.session.draggable) {
+        if (this.naturalSession) this.naturalSession.pickupCommitted = true;
+
         if (!this.session.nativeDragRequested) {
           this.session.phase = 'dragging';
           this.session.longPressEligible = false;
@@ -184,10 +237,12 @@ export class InteractionRecognizer {
           }
         }
       } else if (this.session.phase === 'pending' || this.session.phase === 'longPressEligible') {
-        this.session.phase = 'cancelled';
-        this.session.cancelled = true;
-        this.clearTimers();
-        this.callbacks.onPressCancel?.();
+        if (!this.naturalSession?.strokeCommitted) {
+          this.session.phase = 'cancelled';
+          this.session.cancelled = true;
+          this.clearTimers();
+          this.callbacks.onPressCancel?.();
+        }
       }
     }
   };
@@ -209,11 +264,20 @@ export class InteractionRecognizer {
     if (phase === 'dragging' || this.session.nativeDragRequested) {
       this.finishDrag("pointerup");
       this.session = null;
+      this.naturalSession = null;
+      return;
+    }
+
+    if (this.naturalSession?.strokeCommitted) {
+      console.log(`[gesture] stroke finished on pointerup`);
+      this.session = null;
+      this.naturalSession = null;
       return;
     }
 
     if (phase === 'cancelled') {
       this.session = null;
+      this.naturalSession = null;
       return;
     }
 
@@ -225,16 +289,13 @@ export class InteractionRecognizer {
       this.session.phase = 'longPressCommitted';
       this.callbacks.onEvent("longPress", this.session.areaId, lx, ly);
       this.session = null;
-      return;
-    }
-
-    if (phase === 'longPressCommitted') {
-      this.session = null;
+      this.naturalSession = null;
       return;
     }
 
     if (!this.callbacks.isInteractionEnabled()) {
       this.session = null;
+      this.naturalSession = null;
       return;
     }
 
@@ -265,6 +326,7 @@ export class InteractionRecognizer {
     }
 
     this.session = null;
+    this.naturalSession = null;
   };
 
   private handlePointerCancel = (e: PointerEvent) => {
@@ -282,5 +344,6 @@ export class InteractionRecognizer {
     this.clearTimers();
     this.callbacks.onPressCancel?.();
     this.session = null;
+    this.naturalSession = null;
   };
 }

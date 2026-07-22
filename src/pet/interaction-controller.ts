@@ -5,6 +5,8 @@ import { InteractionExecutor, ExecutorCallbacks } from './interaction/interactio
 import { InteractionDebugOverlay } from './interaction/interaction-debug-overlay';
 import { InteractionManifest, InteractionEventType, InteractionAction } from './interaction/interaction-types';
 import { PetSettings } from '../shared/pet-settings';
+import { DialogueDirector } from './natural/dialogue-director';
+import { ReactionSession } from './natural/reaction-session';
 
 export interface InteractionControllerCallbacks {
   playAnimation: (animName: string, fallback?: string) => void;
@@ -19,6 +21,7 @@ export interface InteractionControllerCallbacks {
   onDragEnd: () => void;
   onPressVisualStart: () => void;
   onPressVisualCancel: () => void;
+  onStrokeReaction?: (areaId: string | null) => void;
 }
 
 export class InteractionController {
@@ -31,6 +34,8 @@ export class InteractionController {
   private ruleEngine: InteractionRuleEngine;
   private executor: InteractionExecutor;
   private debugOverlay: InteractionDebugOverlay;
+  private dialogueDirector: DialogueDirector;
+  private activeReactionSession: ReactionSession | null = null;
 
   private callbacks: InteractionControllerCallbacks;
   private settings: PetSettings;
@@ -48,14 +53,19 @@ export class InteractionController {
     this.debugOverlayDiv = debugOverlayDiv;
     this.settings = settings;
     this.callbacks = callbacks;
+    this.dialogueDirector = new DialogueDirector();
 
-    // Initialize engines
     this.hitAreaEngine = new HitAreaEngine(undefined, true);
     this.ruleEngine = new InteractionRuleEngine();
     
     const executorCallbacks: ExecutorCallbacks = {
       playAnimation: this.callbacks.playAnimation,
-      showDialogue: this.callbacks.showDialogue,
+      showDialogue: (text) => {
+        if (this.dialogueDirector.shouldShowDialogue("tap", this.settings)) {
+          this.callbacks.showDialogue(text);
+          this.dialogueDirector.recordDialogueShown();
+        }
+      },
       resetBehaviorTimer: this.callbacks.resetBehaviorTimer,
       cancelMotion: this.callbacks.cancelMotion,
       setFacing: this.callbacks.setFacing,
@@ -66,7 +76,6 @@ export class InteractionController {
     this.debugOverlay = new InteractionDebugOverlay(this.debugOverlayDiv, this.spriteImg, this.hitAreaEngine);
     this.debugOverlay.setEnabled(this.settings.hitAreaDebugEnabled);
 
-    // Initialize recognizer
     this.recognizer = new InteractionRecognizer(this.element, {
       findArea: (clientX, clientY) => {
         let spriteRect = this.spriteImg.getBoundingClientRect();
@@ -77,14 +86,17 @@ export class InteractionController {
         const facing = this.callbacks.getFacing();
         const area = this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
         this.debugOverlay.updatePointerInfo(clientX, clientY, area ? area.id : null);
-        return area;
+        return area ? {
+          id: area.id,
+          draggable: area.draggable,
+          interactionRole: (area as any).interactionRole,
+          acceptsStroke: (area as any).acceptsStroke
+        } : null;
       },
       onEvent: (event, areaId, _clientX, _clientY) => {
         const currentState = this.callbacks.getCurrentState();
         
-        // Handle special state restrictions before executing rules
         if (currentState === 'sleep') {
-          // Any interaction wakes up the pet
           this.debugOverlay.updateEventInfo(event, "wake-from-sleep");
           this.callbacks.playAnimation("wake", "idle");
           this.callbacks.resetBehaviorTimer();
@@ -92,14 +104,33 @@ export class InteractionController {
         }
 
         if (currentState === 'falling' || currentState === 'landing') {
-          // Falling/landing does not respond to regular clicks
           this.debugOverlay.updateEventInfo(event, "ignored-during-physics");
           return;
         }
 
-        // Cancel motion for sit/walk when clicked
         if (currentState === 'walk' || currentState === 'sit') {
           this.callbacks.cancelMotion();
+        }
+
+        // 抚摸特规逻辑：使用 ReactionSession 避免重置帧
+        if (event === "stroke") {
+          if (!this.activeReactionSession) {
+            this.activeReactionSession = new ReactionSession(
+              areaId === "head" ? "touch-head" : "touch-body"
+            );
+            if (this.callbacks.onStrokeReaction) {
+              this.callbacks.onStrokeReaction(areaId);
+            }
+          } else {
+            this.activeReactionSession.extend();
+          }
+
+          if (this.dialogueDirector.shouldShowDialogue("stroke", this.settings)) {
+            const dialogue = this.callbacks.getRandomDialogueFromGroup("headTouch") || "♪(･ω･)ﾉ";
+            this.callbacks.showDialogue(dialogue);
+            this.dialogueDirector.recordDialogueShown();
+          }
+          return;
         }
 
         const rule = this.ruleEngine.matchRule(event, areaId, currentState, this.manifest);
@@ -119,6 +150,9 @@ export class InteractionController {
         this.debugOverlay.updateEventInfo("dragStart", `area:${areaId};direction:${initialDirection ?? "vertical"}`);
       },
       onDragEnd: (areaId) => {
+        this.activeReactionSession?.finish("dragEnd");
+        this.activeReactionSession = null;
+        this.dialogueDirector.resetStrokeDialogueState();
         this.callbacks.onDragEnd();
         this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId}`);
       },
@@ -136,7 +170,6 @@ export class InteractionController {
       }
     });
 
-    // Handle extra mousemove on the element itself for live debug coords updating when not mouse down
     this.element.addEventListener('pointermove', this.handlePointerMoveHover);
   }
 

@@ -3,6 +3,8 @@ export type InteractionEventType =
   | "doubleClick"
   | "rapidClick"
   | "longPress"
+  | "stroke"
+  | "pickup"
   | "dragStart"
   | "dragEnd";
 

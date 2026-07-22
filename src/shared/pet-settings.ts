@@ -16,4 +16,9 @@ export interface PetSettings {
   interactionEnabled: boolean;
   hitAreaDebugEnabled: boolean;
   animationSpeedMultiplier: number;
+
+  naturalInteractionEnabled: boolean;
+  hoverPettingEnabled: boolean;
+  dialogueFrequency: "quiet" | "normal" | "frequent";
+  ambientBehaviorFrequency: "low" | "normal" | "high";
 }

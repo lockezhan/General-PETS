@@ -169,7 +169,7 @@ export class InteractionDebugOverlay {
         label.setAttribute("dominant-baseline", "middle");
         label.style.fontFamily = "sans-serif";
         label.style.pointerEvents = 'none';
-        label.textContent = `${area.name || area.id} (${area.priority ?? 0})`;
+        label.textContent = `${area.name || area.id} (${(area as any).interactionRole || 'touch'}) pri=${area.priority ?? 0}`;
         this.svg.appendChild(label);
       }
     });
