@@ -21,6 +21,7 @@ describe('InteractionController Event Listeners', () => {
       getRandomDialogueFromGroup: vi.fn(),
       getCurrentState: vi.fn().mockReturnValue('idle'),
       getFacing: vi.fn().mockReturnValue('right'),
+      hasAnimation: vi.fn().mockReturnValue(true),
       onDragStart: vi.fn(),
       onDragEnd: vi.fn(),
       onPressVisualStart: vi.fn(),
@@ -74,5 +75,26 @@ describe('InteractionController Event Listeners', () => {
     // Verify removeEventListener is called for every added listener
     expect(removeEventListenerSpy.mock.calls.length).toBeGreaterThan(0);
     expect(windowRemoveEventListenerSpy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('should use the visible Codex viewport instead of the hidden sprite bounds', () => {
+    const viewport = document.createElement('div');
+    viewport.className = 'codex-frame-viewport';
+    const viewportRect = new DOMRect(40, 60, 144, 156);
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(viewportRect);
+    vi.spyOn(spriteImg, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 0, 0));
+    viewport.appendChild(spriteImg);
+    element.appendChild(viewport);
+
+    const controller = new InteractionController(
+      element,
+      spriteImg,
+      debugOverlayDiv,
+      DEFAULT_SETTINGS,
+      callbacks
+    );
+
+    expect((controller as any).getVisualInteractionRect()).toBe(viewportRect);
+    controller.destroy();
   });
 });

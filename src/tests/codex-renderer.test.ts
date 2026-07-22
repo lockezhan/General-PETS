@@ -141,6 +141,30 @@ describe('CodexAtlasRenderer', () => {
     renderer.destroy();
   });
 
+  it.each([
+    ['walkLeft', 'running-left'],
+    ['walkRight', 'running-right'],
+    ['running-left', 'running-left'],
+    ['running-right', 'running-right']
+  ] as const)(
+    'should resolve distance-driven %s to %s',
+    (animation, mappedAnimation) => {
+      const parent = document.createElement('div');
+      parent.appendChild(element);
+      const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+
+      renderer.beginDistanceDriven({
+        animation,
+        frameCount: 8,
+        strideLengthPx: 72
+      });
+
+      expect(renderer.getPlaybackMode()).toBe('distance');
+      expect((renderer as any).currentMappedAnimation).toBe(mappedAnimation);
+      renderer.destroy();
+    }
+  );
+
   it('should play walkRight and set currentMappedAnimation to running-right without viewport mirror', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
@@ -196,6 +220,80 @@ describe('CodexAtlasRenderer', () => {
 
     renderer.destroy();
   });
+
+  it('should accept both Codex standard names and General-PETS logical names', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+
+    for (const name of [
+      'idle',
+      'running-left',
+      'running-right',
+      'waving',
+      'jumping',
+      'failed',
+      'waiting',
+      'running',
+      'review',
+      'happy',
+      'angry',
+      'sleep',
+      'sit',
+      'falling',
+      'landing',
+      'shy'
+    ]) {
+      expect(renderer.hasAnimation(name), name).toBe(true);
+    }
+
+    renderer.destroy();
+  });
+
+  it.each([
+    ['waving', 3],
+    ['jumping', 4],
+    ['failed', 5],
+    ['waiting', 6],
+    ['running', 7],
+    ['review', 8]
+  ] as const)('should play %s from atlas row %i', (animation, row) => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+
+    renderer.play(animation);
+
+    expect((renderer as any).currentMappedAnimation).toBe(animation);
+    expect((renderer as any).currentConfig.row).toBe(row);
+    renderer.destroy();
+  });
+
+  it.each([0.5, 0.75, 1, 1.25, 1.5])(
+    'should synchronize viewport, canvas and hidden element at %sx scale',
+    (scale) => {
+      const parent = document.createElement('div');
+      parent.appendChild(element);
+      const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+      const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
+      const canvas = parent.querySelector('.codex-frame-canvas') as HTMLCanvasElement;
+      const width = 192 * scale;
+      const height = 208 * scale;
+
+      renderer.resize(width, height);
+
+      expect(viewport.style.width).toBe(`${width}px`);
+      expect(viewport.style.height).toBe(`${height}px`);
+      expect(canvas.style.width).toBe(`${width}px`);
+      expect(canvas.style.height).toBe(`${height}px`);
+      expect(element.style.width).toBe(`${width}px`);
+      expect(element.style.height).toBe(`${height}px`);
+      expect(canvas.width).toBe(Math.round(width * window.devicePixelRatio));
+      expect(canvas.height).toBe(Math.round(height * window.devicePixelRatio));
+
+      renderer.destroy();
+    }
+  );
 });
 
 describe('CharacterLoader with Codex installed pets', () => {

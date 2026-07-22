@@ -14,6 +14,12 @@ export const DEFAULT_ANIMATION_MAPPING: CodexAnimationMapping = {
   dragged: 'jumping',
   shy: 'review',
   surprised: 'review',
+  waving: 'waving',
+  jumping: 'jumping',
+  failed: 'failed',
+  waiting: 'waiting',
+  running: 'running',
+  review: 'review',
 };
 
 export class CodexCharacterAdapter {

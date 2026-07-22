@@ -13,6 +13,8 @@ export interface HitAreaBase {
   name?: string;
   priority?: number;
   draggable?: boolean;
+  interactionRole?: "touch" | "pickup" | "touch-and-pickup";
+  acceptsStroke?: boolean;
 }
 
 export interface RectHitArea extends HitAreaBase {

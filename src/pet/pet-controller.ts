@@ -9,7 +9,7 @@ import { PetState, CharacterManifest, DEFAULT_MOTION_CONFIG, MotionConfig } from
 import { PetSettings } from '../shared/pet-settings';
 import { DEFAULT_SETTINGS } from '../shared/defaults';
 import { EVENT_SETTINGS_CHANGED, EVENT_RESET_POSITION, EVENT_TEST_WALK, EVENT_TEST_FALL } from '../shared/event-names';
-import { primaryMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { currentMonitor, primaryMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
@@ -28,6 +28,9 @@ import { ActionDirector } from './natural/action-director';
 import { BehaviorPlanner, PlannedBehavior } from './natural/behavior-planner';
 import { PetVisualCoordinator } from './natural/visual-coordinator';
 import { DragPoseController } from './natural/drag-pose-controller';
+import { resolveInteractionAnimation } from './interaction/resolve-interaction-animation';
+import { calculatePetVisualLayout } from './visual-layout';
+import { migratePetSettings } from '../shared/settings-migration';
 
 export interface WalkDebugSnapshot {
   requestId: number;
@@ -175,6 +178,9 @@ export class PetController {
       getFacing: () => {
         return this.facingController.getFacing();
       },
+      hasAnimation: (name) => {
+        return this.player?.hasAnimation(name) ?? false;
+      },
       onDragStart: (initialDirection) => {
         this.handleManualDragStart(initialDirection);
       },
@@ -259,13 +265,19 @@ export class PetController {
   public async init() {
     try {
       const store = await load('settings.json', { autoSave: true });
-      const savedSettings = await store.get<PetSettings>('pet-settings');
+      const savedSettings = await store.get<Partial<PetSettings>>('pet-settings');
+      const migration = migratePetSettings(savedSettings);
+      this.settings = migration.settings;
       if (savedSettings) {
-        this.settings = { ...DEFAULT_SETTINGS, ...savedSettings };
+        if (migration.interactionEnabledAdded) {
+          await store.set('pet-settings', this.settings);
+        }
       }
     } catch (e) {
       console.error("[pet-controller] failed to load store", e);
     }
+
+    this.interaction.updateSettings(this.settings);
 
     this.loader = new CharacterLoader(this.settings.characterId);
 
@@ -436,6 +448,23 @@ export class PetController {
     }
 
     if (!this.interactionManifest) {
+      const singleClickAnimation = resolveInteractionAnimation(
+        "singleClick",
+        (name) => this.player.hasAnimation(name)
+      );
+      const doubleClickAnimation = resolveInteractionAnimation(
+        "doubleClick",
+        (name) => this.player.hasAnimation(name)
+      );
+      const rapidClickAnimation = resolveInteractionAnimation(
+        "rapidClick",
+        (name) => this.player.hasAnimation(name)
+      );
+      const longPressAnimation = resolveInteractionAnimation(
+        "longPress",
+        (name) => this.player.hasAnimation(name)
+      );
+
       this.interactionManifest = {
         schemaVersion: 1,
         hitAreas: DEFAULT_CODEX_HIT_AREAS as any,
@@ -446,7 +475,7 @@ export class PetController {
             area: "*",
             priority: 10,
             actions: [
-              { type: "playAnimation", animation: "waving", fallback: "idle" },
+              { type: "playAnimation", animation: singleClickAnimation, fallback: "idle" },
               { type: "showDialogue", group: "singleClick" }
             ]
           },
@@ -456,7 +485,7 @@ export class PetController {
             area: "*",
             priority: 20,
             actions: [
-              { type: "playAnimation", animation: "jumping", fallback: "idle" },
+              { type: "playAnimation", animation: doubleClickAnimation, fallback: "idle" },
               { type: "showDialogue", group: "doubleClick" }
             ]
           },
@@ -466,7 +495,7 @@ export class PetController {
             area: "*",
             priority: 30,
             actions: [
-              { type: "playAnimation", animation: "failed", fallback: "idle" },
+              { type: "playAnimation", animation: rapidClickAnimation, fallback: "idle" },
               { type: "showDialogue", group: "rapidClick" }
             ]
           },
@@ -476,7 +505,7 @@ export class PetController {
             area: "*",
             priority: 25,
             actions: [
-              { type: "playAnimation", animation: "review", fallback: "idle" },
+              { type: "playAnimation", animation: longPressAnimation, fallback: "idle" },
               { type: "showDialogue", group: "longPress" }
             ]
           }
@@ -840,24 +869,90 @@ export class PetController {
 
   private async resizePetWindowForCharacter(manifest: CharacterManifest, scale: number): Promise<void> {
     this.floorController.invalidateCache();
-    const HORIZONTAL_PADDING = 16;
-    const TOP_BUBBLE_RESERVE = 64;
-    const BOTTOM_PADDING = 8;
-
     const frameW = manifest.render?.width || 192;
     const frameH = manifest.render?.height || 208;
+    const {
+      stageWidth: stageW,
+      stageHeight: stageH,
+      windowWidth: winW,
+      windowHeight: winH
+    } = calculatePetVisualLayout(frameW, frameH, scale);
 
-    const stageW = Math.round(frameW * scale);
-    const stageH = Math.round(frameH * scale);
+    if (this.player?.resize) {
+      this.player.resize(stageW, stageH);
+    } else {
+      this.petImage.style.width = `${stageW}px`;
+      this.petImage.style.height = `${stageH}px`;
+      this.petImage.style.transform = 'none';
+      this.petImage.style.objectFit = 'contain';
+      this.petImage.style.objectPosition = 'center bottom';
+      this.petImage.style.transformOrigin = 'center bottom';
+    }
+
+    document.documentElement.style.setProperty(
+      '--pet-display-height',
+      `${stageH}px`
+    );
 
     this.petStage.style.width = `${stageW}px`;
     this.petStage.style.height = `${stageH}px`;
 
-    const winW = stageW + HORIZONTAL_PADDING * 2;
-    const winH = stageH + TOP_BUBBLE_RESERVE + BOTTOM_PADDING;
-
     const appWindow = getCurrentWindow();
+    const oldPosition = await appWindow.outerPosition();
+    const oldSize = await appWindow.outerSize();
+
     await appWindow.setSize(new LogicalSize(winW, winH));
+
+    const scaleFactor = await appWindow.scaleFactor();
+    const newPhysicalWidth = Math.round(winW * scaleFactor);
+    const newPhysicalHeight = Math.round(winH * scaleFactor);
+
+    const nextX = oldPosition.x + Math.round(
+      (oldSize.width - newPhysicalWidth) / 2
+    );
+    const nextY = oldPosition.y + oldSize.height - newPhysicalHeight;
+
+    await appWindow.setPosition(new PhysicalPosition(nextX, nextY));
+    await this.clampPetWindowToVisibleArea();
+
+    if (import.meta.env.DEV) {
+      const viewport = this.petRoot.querySelector<HTMLElement>('.codex-frame-viewport');
+      const canvas = this.petRoot.querySelector<HTMLCanvasElement>('.codex-frame-canvas');
+      console.info(
+        `[visual-resize]\n` +
+        `scale=${scale}\n` +
+        `frame=${frameW}x${frameH}\n` +
+        `stage=${stageW}x${stageH}\n` +
+        `viewport=${viewport?.style.width ?? 'n/a'}x${viewport?.style.height ?? 'n/a'}\n` +
+        `canvasCss=${canvas?.style.width ?? 'n/a'}x${canvas?.style.height ?? 'n/a'}\n` +
+        `canvasPhysical=${canvas ? `${canvas.width}x${canvas.height}` : 'n/a'}\n` +
+        `window=${winW}x${winH}`
+      );
+    }
+  }
+
+  private async clampPetWindowToVisibleArea(): Promise<void> {
+    try {
+      const appWindow = getCurrentWindow();
+      const currentPosition = await appWindow.outerPosition();
+      const windowSize = await appWindow.outerSize();
+      const monitor = await currentMonitor() ?? await primaryMonitor();
+      if (!monitor) return;
+
+      const { position, size } = monitor.workArea;
+      const minX = position.x;
+      const minY = position.y;
+      const maxX = Math.max(minX, position.x + size.width - windowSize.width);
+      const maxY = Math.max(minY, position.y + size.height - windowSize.height);
+      const nextX = Math.max(minX, Math.min(currentPosition.x, maxX));
+      const nextY = Math.max(minY, Math.min(currentPosition.y, maxY));
+
+      if (nextX !== currentPosition.x || nextY !== currentPosition.y) {
+        await appWindow.setPosition(new PhysicalPosition(nextX, nextY));
+      }
+    } catch (error) {
+      console.error('[pet] Failed to clamp window to visible work area:', error);
+    }
   }
 
   private async openSettingsWindow() {

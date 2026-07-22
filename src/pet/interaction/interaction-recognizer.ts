@@ -277,6 +277,7 @@ export class InteractionRecognizer {
 
     if (this.strokeStarted) {
       console.log('[gesture] strokeEnd on pointerup');
+      this.tracePointerUp('stroke');
       this.callbacks.onStrokeEnd?.(this.session.areaId);
       this.strokeStarted = false;
       this.session = null;
@@ -287,6 +288,7 @@ export class InteractionRecognizer {
     const phase = this.session.phase;
 
     if (phase === 'dragging' || this.session.nativeDragRequested) {
+      this.tracePointerUp('dragEnd');
       this.finishDrag("pointerup");
       this.session = null;
       this.naturalSession = null;
@@ -294,6 +296,7 @@ export class InteractionRecognizer {
     }
 
     if (phase === 'cancelled') {
+      this.tracePointerUp('cancelled');
       this.session = null;
       this.naturalSession = null;
       return;
@@ -303,6 +306,7 @@ export class InteractionRecognizer {
       const lx = (this.session as any)._longPressClientX ?? e.clientX;
       const ly = (this.session as any)._longPressClientY ?? e.clientY;
       console.log(`[gesture] longPress committed on pointerup`);
+      this.tracePointerUp('longPress');
       this.session.longPressTriggered = true;
       this.session.phase = 'longPressCommitted';
       this.callbacks.onEvent("longPress", this.session.areaId, lx, ly);
@@ -315,12 +319,14 @@ export class InteractionRecognizer {
     const now = performance.now();
     if (now - this.lastDragEndedAt < CLICK_SUPPRESS_AFTER_DRAG_MS) {
       console.log('[gesture] click suppressed after drag');
+      this.tracePointerUp('suppressed-after-drag');
       this.session = null;
       this.naturalSession = null;
       return;
     }
 
     if (!this.callbacks.isInteractionEnabled()) {
+      this.tracePointerUp('disabled');
       this.session = null;
       this.naturalSession = null;
       return;
@@ -336,10 +342,12 @@ export class InteractionRecognizer {
     if (this.clickQueue.length >= RAPID_CLICK_THRESHOLD) {
       this.clearSingleClickTimer();
       this.clickQueue = [];
+      this.tracePointerUp('rapidClick');
       this.callbacks.onEvent("rapidClick", areaId, e.clientX, e.clientY);
     } else {
       if (this.singleClickTimer !== null) {
         this.clearSingleClickTimer();
+        this.tracePointerUp('doubleClick');
         this.callbacks.onEvent("doubleClick", areaId, e.clientX, e.clientY);
       } else {
         const clientX = e.clientX;
@@ -348,6 +356,7 @@ export class InteractionRecognizer {
           this.singleClickTimer = null;
           this.callbacks.onEvent("singleClick", areaId, clientX, clientY);
         }, DOUBLE_CLICK_WINDOW_MS);
+        this.tracePointerUp('singleClick');
       }
     }
 
@@ -377,4 +386,13 @@ export class InteractionRecognizer {
     this.session = null;
     this.naturalSession = null;
   };
+
+  private tracePointerUp(gesture: string): void {
+    if (!import.meta.env.DEV) return;
+    console.info(
+      `[interaction-trace]\n` +
+      `phase=pointerup\n` +
+      `gesture=${gesture}`
+    );
+  }
 }

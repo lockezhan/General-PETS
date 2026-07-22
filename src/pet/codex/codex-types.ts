@@ -1,3 +1,5 @@
+import type { CodexV1AnimationName } from './codex-atlas-contract';
+
 export interface CodexPetManifest {
   id: string;
   displayName: string;
@@ -47,19 +49,26 @@ export type CharacterSource =
     };
 
 export interface CodexAnimationMapping {
-  idle: string;
-  walkLeft: string;
-  walkRight: string;
-  happy: string;
-  angry: string;
-  sleep: string;
-  sit: string;
-  wake: string;
-  falling: string;
-  landing: string;
-  dragged: string;
-  shy: string;
-  surprised: string;
+  idle: CodexV1AnimationName;
+  walkLeft: CodexV1AnimationName;
+  walkRight: CodexV1AnimationName;
+  happy: CodexV1AnimationName;
+  angry: CodexV1AnimationName;
+  sleep: CodexV1AnimationName;
+  sit: CodexV1AnimationName;
+  wake: CodexV1AnimationName;
+  falling: CodexV1AnimationName;
+  landing: CodexV1AnimationName;
+  dragged: CodexV1AnimationName;
+  shy: CodexV1AnimationName;
+  surprised: CodexV1AnimationName;
+
+  waving?: CodexV1AnimationName;
+  jumping?: CodexV1AnimationName;
+  failed?: CodexV1AnimationName;
+  waiting?: CodexV1AnimationName;
+  running?: CodexV1AnimationName;
+  review?: CodexV1AnimationName;
 }
 
 export interface CodexAdapterConfig {

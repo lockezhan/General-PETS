@@ -7,6 +7,7 @@ import { InteractionManifest, InteractionEventType, InteractionAction } from './
 import { PetSettings } from '../shared/pet-settings';
 import { DialogueDirector } from './natural/dialogue-director';
 import { ReactionSession } from './natural/reaction-session';
+import { resolveInteractionAnimation } from './interaction/resolve-interaction-animation';
 
 export interface InteractionControllerCallbacks {
   playAnimation: (animName: string, fallback?: string) => void;
@@ -17,6 +18,7 @@ export interface InteractionControllerCallbacks {
   getRandomDialogueFromGroup: (group: string) => string | null;
   getCurrentState: () => string;
   getFacing: () => "left" | "right";
+  hasAnimation: (name: string) => boolean;
   onDragStart: (initialDirection: "left" | "right" | null) => void;
   onDragEnd: () => void;
   onPressVisualStart: () => void;
@@ -44,6 +46,7 @@ export class InteractionController {
 
   private lastHoverTime: number = 0;
   private currentHoverArea: string | null = null;
+  private interactionConfigLogged = false;
 
   constructor(
     element: HTMLElement,
@@ -82,13 +85,20 @@ export class InteractionController {
 
     this.recognizer = new InteractionRecognizer(this.element, {
       findArea: (clientX, clientY) => {
-        let spriteRect = this.spriteImg.getBoundingClientRect();
-        if (spriteRect.width === 0 || spriteRect.height === 0) {
-          const viewport = this.element.querySelector('.codex-frame-viewport') || this.element;
-          spriteRect = viewport.getBoundingClientRect();
-        }
+        const spriteRect = this.getVisualInteractionRect();
         const facing = this.callbacks.getFacing();
         const area = this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
+        if (import.meta.env.DEV) {
+          console.info(
+            `[interaction-trace]\n` +
+            `phase=pointerdown\n` +
+            `x=${clientX}\n` +
+            `y=${clientY}\n` +
+            `rect=${spriteRect.left},${spriteRect.top},${spriteRect.width},${spriteRect.height}\n` +
+            `area=${area?.id ?? 'none'}\n` +
+            `enabled=${this.settings.interactionEnabled}`
+          );
+        }
         this.debugOverlay.updatePointerInfo(clientX, clientY, area ? area.id : null);
         return area ? {
           id: area.id,
@@ -119,6 +129,13 @@ export class InteractionController {
         const rule = this.ruleEngine.matchRule(event, areaId, currentState, this.manifest);
         
         console.log(`[interaction] recognized event=${event} area=${areaId} state=${currentState} -> rule=${rule ? rule.id : 'fallback'}`);
+        if (import.meta.env.DEV) {
+          console.info(
+            `[interaction-trace]\n` +
+            `event=${event}\n` +
+            `rule=${rule?.id ?? 'fallback'}`
+          );
+        }
         
         this.debugOverlay.updateEventInfo(event, rule ? rule.id : 'fallback');
 
@@ -189,7 +206,7 @@ export class InteractionController {
   private handlePointerMoveHover = (e: PointerEvent) => {
     if (!this.settings.interactionEnabled) return;
 
-    const spriteRect = this.spriteImg.getBoundingClientRect();
+    const spriteRect = this.getVisualInteractionRect();
     const facing = this.callbacks.getFacing();
     const area = this.hitAreaEngine.findHitArea(e.clientX, e.clientY, spriteRect, facing);
 
@@ -234,6 +251,32 @@ export class InteractionController {
     this.hitAreaEngine = new HitAreaEngine(manifest?.hitAreas, supportsHorizontalFlip);
     this.ruleEngine.clearCooldowns();
     this.debugOverlay.updateEngine(this.hitAreaEngine);
+
+    if (import.meta.env.DEV && !this.interactionConfigLogged) {
+      const visualSurface = this.element.querySelector('.codex-frame-viewport')
+        ? 'codex-frame-viewport'
+        : 'pet-sprite';
+      console.info(
+        `[interaction-config]\n` +
+        `enabled=${this.settings.interactionEnabled}\n` +
+        `style=${this.settings.interactionStyle}\n` +
+        `hitAreas=${this.hitAreaEngine.getHitAreas().length}\n` +
+        `visualSurface=${visualSurface}`
+      );
+      this.interactionConfigLogged = true;
+    }
+  }
+
+  private getVisualInteractionRect(): DOMRect {
+    const codexViewport = this.element.querySelector<HTMLElement>(
+      '.codex-frame-viewport'
+    );
+
+    if (codexViewport) {
+      return codexViewport.getBoundingClientRect();
+    }
+
+    return this.spriteImg.getBoundingClientRect();
   }
 
   private executeFallback(event: InteractionEventType) {
@@ -247,19 +290,19 @@ export class InteractionController {
     } else {
       switch (event) {
         case "singleClick":
-          animation = "waving";
+          animation = resolveInteractionAnimation("singleClick", this.callbacks.hasAnimation);
           dialogueGroup = "singleClick";
           break;
         case "doubleClick":
-          animation = "jumping";
+          animation = resolveInteractionAnimation("doubleClick", this.callbacks.hasAnimation);
           dialogueGroup = "doubleClick";
           break;
         case "rapidClick":
-          animation = "failed";
+          animation = resolveInteractionAnimation("rapidClick", this.callbacks.hasAnimation);
           dialogueGroup = "rapidClick";
           break;
         case "longPress":
-          animation = "review";
+          animation = resolveInteractionAnimation("longPress", this.callbacks.hasAnimation);
           dialogueGroup = "longPress";
           break;
       }

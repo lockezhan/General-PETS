@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { HitAreaEngine } from '../pet/interaction/hit-area-engine';
 import { HitAreaShape } from '../pet/interaction/interaction-types';
+import { DEFAULT_CODEX_HIT_AREAS } from '../pet/natural/natural-types';
 
 describe('HitAreaEngine', () => {
   const spriteRect = new DOMRect(100, 100, 200, 200); // left=100, top=100, width=200, height=200
@@ -187,5 +188,14 @@ describe('HitAreaEngine', () => {
     expect(hit?.id).toBe('body');
     expect(hit?.draggable).toBe(true);
     expect(hit?.priority).toBe(0);
+  });
+
+  it('should keep precise areas ahead of the whole-pet Codex fallback', () => {
+    const engine = new HitAreaEngine(DEFAULT_CODEX_HIT_AREAS as HitAreaShape[], false);
+
+    expect(engine.findHitArea(200, 150, spriteRect, 'right')?.id).toBe('face');
+    expect(engine.findHitArea(105, 295, spriteRect, 'right')?.id).toBe('whole-pet');
+    expect(engine.findHitArea(295, 295, spriteRect, 'right')?.id).toBe('whole-pet');
+    expect(DEFAULT_CODEX_HIT_AREAS).toHaveLength(4);
   });
 });

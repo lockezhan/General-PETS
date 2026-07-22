@@ -49,9 +49,10 @@ body {
 
 .pet-stage {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 50%;
+  right: auto;
+  bottom: 8px;
+  transform: translateX(-50%);
   display: flex;
   align-items: flex-end;
   justify-content: center;

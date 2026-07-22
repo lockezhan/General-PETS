@@ -138,5 +138,18 @@ export const DEFAULT_CODEX_HIT_AREAS: HitAreaBase[] = [
     interactionRole: "touch-and-pickup",
     acceptsStroke: true,
     draggable: true
+  },
+  {
+    id: "whole-pet",
+    name: "完整角色",
+    shape: "rect",
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    priority: 0,
+    interactionRole: "touch-and-pickup",
+    acceptsStroke: false,
+    draggable: true
   }
 ];

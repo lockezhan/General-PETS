@@ -118,31 +118,22 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   hasAnimation(name: string): boolean {
-    const logical = this.normalizeLogicalAnimationName(name);
-    let resolvedName = logical;
-    if (logical === 'walk') {
-      resolvedName = this.facing === 'left' ? 'walkLeft' : 'walkRight';
-    }
-    const mapped = this.adapter.animationMapping[resolvedName as keyof typeof this.adapter.animationMapping];
-    return !!(mapped && CODEX_BASE_ANIMATIONS[mapped as keyof typeof CODEX_BASE_ANIMATIONS]);
+    return this.resolveMappedAnimation(name) !== null;
   }
 
   play(name: string, options?: AnimationPlaybackOptions): void {
-    const logical = this.normalizeLogicalAnimationName(name);
-    let resolvedName = logical;
-    if (logical === 'walk') {
-      resolvedName = this.facing === 'left' ? 'walkLeft' : 'walkRight';
-    }
+    const resolvedName = this.normalizeLogicalAnimationName(name);
+    const mapped = this.resolveMappedAnimation(resolvedName);
 
-    const mapped = this.adapter.animationMapping[resolvedName as keyof typeof this.adapter.animationMapping] as CodexV1AnimationName;
-    const config = CODEX_BASE_ANIMATIONS[mapped];
-    const defaultTiming = CODEX_DEFAULT_TIMINGS[mapped];
-
-    if (!config || !defaultTiming) {
-      console.warn(`[CodexAtlasRenderer] Unmapped state: ${name} -> logical=${logical} -> mapped=${mapped}`);
-      if (options?.onComplete) options.onComplete('idle');
+    if (!mapped) {
+      console.warn(`[CodexAtlasRenderer] Unmapped animation: ${name}`);
+      this.traceAnimationRequest(name, resolvedName, null, null, false);
+      options?.onComplete?.('idle');
       return;
     }
+
+    const config = CODEX_BASE_ANIMATIONS[mapped];
+    const defaultTiming = CODEX_DEFAULT_TIMINGS[mapped];
 
     this.clock.stop();
     this.playbackMode = 'clock';
@@ -165,18 +156,20 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     }
 
     const speed = options?.speedMultiplier !== undefined ? options.speedMultiplier : 1.0;
-    this.clock.play(name, timing, config.frameCount, speed);
+    this.traceAnimationRequest(name, resolvedName, mapped, config.row, true);
+    this.clock.play(resolvedName, timing, config.frameCount, speed);
   }
 
   beginDistanceDriven(config: DistanceDrivenPlayback): void {
     const logical = this.normalizeLogicalAnimationName(config.animation);
-    const mapped = this.adapter.animationMapping[logical as keyof typeof this.adapter.animationMapping] as CodexV1AnimationName;
-    const baseConfig = CODEX_BASE_ANIMATIONS[mapped];
+    const mapped = this.resolveMappedAnimation(config.animation);
 
-    if (!baseConfig) {
+    if (!mapped) {
       console.warn(`[CodexAtlasRenderer] beginDistanceDriven unmapped: ${config.animation}`);
       return;
     }
+
+    const baseConfig = CODEX_BASE_ANIMATIONS[mapped];
 
     this.clock.stop();
     this.playbackMode = 'distance';
@@ -232,6 +225,15 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   resize(width: number, height: number): void {
+    if (
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return;
+    }
+
     this.displayWidth = width;
     this.displayHeight = height;
     if (this.viewport) {
@@ -242,6 +244,8 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       this.canvas.style.width = `${width}px`;
       this.canvas.style.height = `${height}px`;
     }
+    this.element.style.width = `${width}px`;
+    this.element.style.height = `${height}px`;
     this.renderFrame();
   }
 
@@ -263,13 +267,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   public renderFrame(): void {
-    if (!this.currentConfig || !this.canvas || !this.ctx) return;
-
-    const ver = this.adapter.spriteVersionNumber || 1;
-    const contract = CODEX_ATLAS_CONTRACTS[ver];
-
-    const row = this.currentConfig.row;
-    const col = this.currentFrameIndex;
+    if (!this.canvas) return;
 
     const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
 
@@ -285,9 +283,18 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     }
 
     const ctx = this.ctx;
+    if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, this.displayWidth, this.displayHeight);
     ctx.imageSmoothingEnabled = false;
+
+    if (!this.currentConfig) return;
+
+    const ver = this.adapter.spriteVersionNumber || 1;
+    const contract = CODEX_ATLAS_CONTRACTS[ver];
+
+    const row = this.currentConfig.row;
+    const col = this.currentFrameIndex;
 
     // Integer source coordinates to guarantee no subpixel boundary bleeding
     const sourceX = Math.floor(col * contract.frameWidth);
@@ -334,8 +341,45 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   private normalizeLogicalAnimationName(name: string): string {
-    if (name === 'running-left') return 'walkLeft';
-    if (name === 'running-right') return 'walkRight';
+    if (name === 'walk') {
+      return this.facing === 'left' ? 'walkLeft' : 'walkRight';
+    }
     return name;
+  }
+
+  private resolveMappedAnimation(name: string): CodexV1AnimationName | null {
+    const logical = this.normalizeLogicalAnimationName(name);
+
+    if (Object.prototype.hasOwnProperty.call(CODEX_BASE_ANIMATIONS, logical)) {
+      return logical as CodexV1AnimationName;
+    }
+
+    const mapped = this.adapter.animationMapping[
+      logical as keyof typeof this.adapter.animationMapping
+    ];
+
+    if (mapped && Object.prototype.hasOwnProperty.call(CODEX_BASE_ANIMATIONS, mapped)) {
+      return mapped as CodexV1AnimationName;
+    }
+
+    return null;
+  }
+
+  private traceAnimationRequest(
+    requested: string,
+    resolved: string,
+    mapped: CodexV1AnimationName | null,
+    atlasRow: number | null,
+    accepted: boolean
+  ): void {
+    if (!import.meta.env.DEV) return;
+    console.info(
+      `[interaction-trace]\n` +
+      `requested=${requested}\n` +
+      `resolved=${resolved}\n` +
+      `mapped=${mapped ?? 'none'}\n` +
+      `atlasRow=${atlasRow ?? 'none'}\n` +
+      `accepted=${accepted}`
+    );
   }
 }
