@@ -118,6 +118,8 @@ export interface AnimationClockCallbacks {
 export interface AnimationDebugStats {
   state: string;
   frameIndex: number;
+  logicalFrameIndex: number;
+  actualFrameIndex: number;
   configuredDurationMs: number;
   effectiveDurationMs: number;
   lastAdvanceAt: number;
@@ -133,7 +135,8 @@ export class AnimationClock {
   private frameCount = 0;
   private speedMultiplier = 1.0;
 
-  private currentFrameIndex = 0;
+  private logicalFrameIndex = 0;
+  private actualFrameIndex = 0;
   private timerId: any = null;
   private isPaused = false;
   private isRunning = false;
@@ -155,7 +158,9 @@ export class AnimationClock {
   getDebugStats(): AnimationDebugStats {
     return {
       state: this.stateName,
-      frameIndex: this.currentFrameIndex,
+      frameIndex: this.actualFrameIndex,
+      logicalFrameIndex: this.logicalFrameIndex,
+      actualFrameIndex: this.actualFrameIndex,
       configuredDurationMs: this.timing ? this.getCurrentFrameConfiguredDuration() : 0,
       effectiveDurationMs: this.currentFrameDuration,
       lastAdvanceAt: this.lastAdvanceAt,
@@ -167,10 +172,20 @@ export class AnimationClock {
     this.stop();
 
     this.stateName = stateName;
-    this.timing = timing;
     this.frameCount = frameCount;
+    const sequence = timing.frameSequence;
+    const validSequence = sequence === undefined || (
+      sequence.length > 0 &&
+      sequence.length <= 32 &&
+      sequence.every((index) => Number.isInteger(index) && index >= 0 && index < frameCount)
+    );
+    this.timing = validSequence ? timing : { ...timing, frameSequence: undefined };
+    if (!validSequence) {
+      console.warn(`[animation] invalid frameSequence for state=${stateName}; using atlas order`);
+    }
     this.speedMultiplier = this.clampSpeed(speedMultiplier);
-    this.currentFrameIndex = 0;
+    this.logicalFrameIndex = 0;
+    this.actualFrameIndex = this.resolveActualFrameIndex(0);
     this.isRunning = true;
     this.isPaused = false;
     this.isDelayPeriod = false;
@@ -238,19 +253,21 @@ export class AnimationClock {
 
   private renderCurrentFrame() {
     this.lastAdvanceAt = performance.now();
-    this.onFrameChange(this.currentFrameIndex);
+    this.actualFrameIndex = this.resolveActualFrameIndex(this.logicalFrameIndex);
+    this.onFrameChange(this.actualFrameIndex);
   }
 
   private getCurrentFrameConfiguredDuration(): number {
     if (!this.timing) return 100;
     
     // 1. Check array duration
-    if (this.timing.frameDurationsMs && this.timing.frameDurationsMs.length === this.frameCount) {
-      return this.timing.frameDurationsMs[this.currentFrameIndex];
+    const logicalFrameCount = this.getLogicalFrameCount();
+    if (this.timing.frameDurationsMs && this.timing.frameDurationsMs.length === logicalFrameCount) {
+      return this.timing.frameDurationsMs[this.logicalFrameIndex];
     }
     
     // 2. Check last frame duration
-    if (this.currentFrameIndex === this.frameCount - 1 && this.timing.lastFrameDurationMs !== undefined) {
+    if (this.logicalFrameIndex === logicalFrameCount - 1 && this.timing.lastFrameDurationMs !== undefined) {
       return this.timing.lastFrameDurationMs;
     }
 
@@ -275,7 +292,7 @@ export class AnimationClock {
     this.lastStartTime = performance.now();
     this.timerId = setTimeout(this.onTick, this.currentFrameDuration);
     
-    this.logDebug(`state=${this.stateName} frame=${this.currentFrameIndex} duration=${this.currentFrameDuration.toFixed(1)}ms`);
+    this.logDebug(`state=${this.stateName} logicalFrame=${this.logicalFrameIndex} actualFrame=${this.actualFrameIndex} duration=${this.currentFrameDuration.toFixed(1)}ms`);
   }
 
   private onTick = () => {
@@ -284,15 +301,16 @@ export class AnimationClock {
 
     if (this.isDelayPeriod) {
       // Loop delay ended, start a new loop
-      this.currentFrameIndex = 0;
+      this.logicalFrameIndex = 0;
       this.renderCurrentFrame();
       this.scheduleNextFrame();
       return;
     }
 
     // Standard frame tick
-    if (this.currentFrameIndex < this.frameCount - 1) {
-      this.currentFrameIndex++;
+    const logicalFrameCount = this.getLogicalFrameCount();
+    if (this.logicalFrameIndex < logicalFrameCount - 1) {
+      this.logicalFrameIndex++;
       this.renderCurrentFrame();
       this.scheduleNextFrame();
     } else {
@@ -315,7 +333,7 @@ export class AnimationClock {
         }
 
         if (delayMs > 0) {
-          this.currentFrameIndex = holdIndex;
+          this.logicalFrameIndex = holdIndex;
           this.renderCurrentFrame();
           
           this.isDelayPeriod = true;
@@ -326,7 +344,7 @@ export class AnimationClock {
           this.logDebug(`state=${this.stateName} loop-delay=${this.currentFrameDuration.toFixed(1)}ms`);
         } else {
           // Loop immediately
-          this.currentFrameIndex = 0;
+          this.logicalFrameIndex = 0;
           this.renderCurrentFrame();
           this.scheduleNextFrame();
         }
@@ -338,6 +356,16 @@ export class AnimationClock {
       }
     }
   };
+
+  private getLogicalFrameCount(): number {
+    return this.timing?.frameSequence?.length ?? this.frameCount;
+  }
+
+  private resolveActualFrameIndex(logicalFrameIndex: number): number {
+    const sequence = this.timing?.frameSequence;
+    if (!sequence) return logicalFrameIndex;
+    return sequence[logicalFrameIndex] ?? 0;
+  }
 
   private clearTimer(reason: string) {
     if (this.timerId) {

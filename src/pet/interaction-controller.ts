@@ -3,24 +3,32 @@ import { InteractionRecognizer } from './interaction/interaction-recognizer';
 import { InteractionRuleEngine } from './interaction/interaction-rule-engine';
 import { InteractionExecutor, ExecutorCallbacks } from './interaction/interaction-executor';
 import { InteractionDebugOverlay } from './interaction/interaction-debug-overlay';
-import { InteractionManifest, InteractionEventType, InteractionAction } from './interaction/interaction-types';
+import { InteractionManifest, InteractionEventType, InteractionAction, InteractionExecutionContext } from './interaction/interaction-types';
 import { PetSettings } from '../shared/pet-settings';
 import { DialogueDirector } from './natural/dialogue-director';
 import { ReactionSession } from './natural/reaction-session';
 import { resolveInteractionAnimation } from './interaction/resolve-interaction-animation';
+import { HitAreaShape } from './interaction/interaction-types';
+import { isCanvasPointOpaque } from './interaction/visual-alpha-hit-test';
 
 export interface InteractionControllerCallbacks {
-  playAnimation: (animName: string, fallback?: string) => void;
-  showDialogue: (text: string) => void;
+  playAnimation: (animName: string, fallback?: string, context?: InteractionExecutionContext) => boolean | void;
+  showDialogue: (text: string, context?: InteractionExecutionContext) => void;
   resetBehaviorTimer: () => void;
   cancelMotion: () => void;
   setFacing: (facing: "left" | "right") => void;
   getRandomDialogueFromGroup: (group: string) => string | null;
   getCurrentState: () => string;
+  getCurrentAction?: () => string | null;
   getFacing: () => "left" | "right";
   hasAnimation: (name: string) => boolean;
-  onDragStart: (initialDirection: "left" | "right" | null) => void;
-  onDragEnd: () => void;
+  onDragStart: (
+    initialDirection: "left" | "right" | null,
+    pointerScreenX: number,
+    pointerScreenY: number
+  ) => void;
+  onDragMove: (pointerScreenX: number, pointerScreenY: number) => void;
+  onDragEnd: (reason?: string) => void;
   onPressVisualStart: () => void;
   onPressVisualCancel: () => void;
   onStrokeReaction?: (areaId: string | null) => void;
@@ -47,6 +55,7 @@ export class InteractionController {
   private lastHoverTime: number = 0;
   private currentHoverArea: string | null = null;
   private interactionConfigLogged = false;
+  private forceDialogueInDev = import.meta.env.DEV && import.meta.env.VITE_FORCE_DIALOGUE_IN_DEV === 'true';
 
   constructor(
     element: HTMLElement,
@@ -66,13 +75,19 @@ export class InteractionController {
     this.ruleEngine = new InteractionRuleEngine();
     
     const executorCallbacks: ExecutorCallbacks = {
-      playAnimation: this.callbacks.playAnimation,
-      showDialogue: (text) => {
-        if (this.dialogueDirector.shouldShowDialogue("tap", this.settings)) {
-          this.callbacks.showDialogue(text);
-          this.dialogueDirector.recordDialogueShown();
+      playAnimation: (animName, fallback, context) => {
+        const stateBefore = this.callbacks.getCurrentState();
+        const accepted = this.callbacks.playAnimation(animName, fallback, context);
+        if (import.meta.env.DEV) {
+          console.info(
+            `[interaction-action] event=${context.event} requested=${animName} accepted=${accepted !== false} ` +
+            `stateBefore=${stateBefore} currentPriority=${this.callbacks.getCurrentAction?.() ?? 'none'} ` +
+            `${accepted === false ? `blockedBy=${this.callbacks.getCurrentAction?.() ?? 'none'}` : ''}`
+          );
         }
+        return accepted;
       },
+      showDialogue: (text, context) => this.showDialogueForContext(text, context),
       resetBehaviorTimer: this.callbacks.resetBehaviorTimer,
       cancelMotion: this.callbacks.cancelMotion,
       setFacing: this.callbacks.setFacing,
@@ -87,7 +102,7 @@ export class InteractionController {
       findArea: (clientX, clientY) => {
         const spriteRect = this.getVisualInteractionRect();
         const facing = this.callbacks.getFacing();
-        const area = this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
+        const area = this.findHitAreaAtPoint(clientX, clientY, spriteRect, facing);
         if (import.meta.env.DEV) {
           console.info(
             `[interaction-trace]\n` +
@@ -140,9 +155,9 @@ export class InteractionController {
         this.debugOverlay.updateEventInfo(event, rule ? rule.id : 'fallback');
 
         if (rule) {
-          this.executor.executeActions(rule.actions);
+          this.executor.executeActions(rule.actions, this.toExecutionContext(event, areaId));
         } else {
-          this.executeFallback(event);
+          this.executeFallback(event, areaId);
         }
       },
       onStrokeStart: (areaId) => {
@@ -154,10 +169,14 @@ export class InteractionController {
             this.callbacks.onStrokeReaction(areaId);
           }
         }
-        if (this.dialogueDirector.shouldShowDialogue("stroke", this.settings)) {
+        const context: InteractionExecutionContext = { event: "stroke", areaId };
+        if (this.dialogueDirector.shouldShowDialogue("stroke", this.settings, performance.now(), this.forceDialogueInDev)) {
           const dialogue = this.callbacks.getRandomDialogueFromGroup("headTouch") || "♪(･ω･)ﾉ";
-          this.callbacks.showDialogue(dialogue);
+          this.callbacks.showDialogue(dialogue, context);
           this.dialogueDirector.recordDialogueShown();
+          if (import.meta.env.DEV) console.info('[dialogue] event=stroke group=headTouch allowed=true textFound=true');
+        } else if (import.meta.env.DEV) {
+          console.info('[dialogue] event=stroke group=headTouch allowed=false textFound=false');
         }
       },
       onStrokeProgress: (_areaId) => {
@@ -172,16 +191,19 @@ export class InteractionController {
         }
         this.dialogueDirector.resetStrokeDialogueState();
       },
-      onDragStart: (areaId, initialDirection) => {
-        this.callbacks.onDragStart(initialDirection);
+      onDragStart: (areaId, initialDirection, pointerScreenX, pointerScreenY) => {
+        this.callbacks.onDragStart(initialDirection, pointerScreenX, pointerScreenY);
         this.debugOverlay.updateEventInfo("dragStart", `area:${areaId};direction:${initialDirection ?? "vertical"}`);
       },
-      onDragEnd: (areaId) => {
+      onDragMove: (pointerScreenX, pointerScreenY) => {
+        this.callbacks.onDragMove(pointerScreenX, pointerScreenY);
+      },
+      onDragEnd: (areaId, reason) => {
         this.activeReactionSession?.finish("dragEnd");
         this.activeReactionSession = null;
         this.dialogueDirector.resetStrokeDialogueState();
-        this.callbacks.onDragEnd();
-        this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId}`);
+        this.callbacks.onDragEnd(reason);
+        this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId};reason:${reason ?? "unknown"}`);
       },
       isInteractionEnabled: () => {
         return this.settings.interactionEnabled;
@@ -208,7 +230,8 @@ export class InteractionController {
 
     const spriteRect = this.getVisualInteractionRect();
     const facing = this.callbacks.getFacing();
-    const area = this.hitAreaEngine.findHitArea(e.clientX, e.clientY, spriteRect, facing);
+    const area = this.findHitAreaAtPoint(e.clientX, e.clientY, spriteRect, facing);
+    this.element.classList.toggle('is-interactive-hover', area !== null);
 
     if (this.settings.hitAreaDebugEnabled) {
       this.debugOverlay.updatePointerInfo(e.clientX, e.clientY, area ? area.id : null);
@@ -239,6 +262,11 @@ export class InteractionController {
   public updateSettings(settings: PetSettings) {
     this.settings = settings;
     this.debugOverlay.setEnabled(settings.hitAreaDebugEnabled);
+  }
+
+  /** Development-only manual acceptance switch; never persisted in settings. */
+  public setForceDialogueInDev(enabled: boolean) {
+    this.forceDialogueInDev = import.meta.env.DEV && enabled;
   }
 
   public updateCharacterContext(
@@ -279,7 +307,22 @@ export class InteractionController {
     return this.spriteImg.getBoundingClientRect();
   }
 
-  private executeFallback(event: InteractionEventType) {
+  private findHitAreaAtPoint(
+    clientX: number,
+    clientY: number,
+    spriteRect: DOMRect,
+    facing: "left" | "right",
+  ): HitAreaShape | null {
+    const codexCanvas = this.element.querySelector<HTMLCanvasElement>(
+      'canvas.codex-frame-canvas'
+    );
+    if (codexCanvas && !isCanvasPointOpaque(codexCanvas, clientX, clientY, spriteRect)) {
+      return null;
+    }
+    return this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
+  }
+
+  private executeFallback(event: InteractionEventType, areaId: string | null) {
     let animation = "";
     let dialogueGroup = "";
 
@@ -317,12 +360,52 @@ export class InteractionController {
     }
     actions.push({ type: "resetBehaviorTimer" });
     
-    this.executor.executeActions(actions);
+    if (actions.length > 0) {
+      this.executor.executeActions(actions, this.toExecutionContext(event, areaId));
+    }
+  }
+
+  private toExecutionContext(event: InteractionEventType, areaId: string | null): InteractionExecutionContext {
+    const supported: InteractionExecutionContext['event'][] = [
+      'singleClick', 'doubleClick', 'rapidClick', 'longPress', 'stroke'
+    ];
+    return {
+      event: supported.includes(event as InteractionExecutionContext['event'])
+        ? event as InteractionExecutionContext['event']
+        : 'singleClick',
+      areaId
+    };
+  }
+
+  private showDialogueForContext(text: string, context: InteractionExecutionContext) {
+    const intent = ({
+      singleClick: 'tap',
+      doubleClick: 'doubleTap',
+      rapidClick: 'rapidTap',
+      longPress: 'longPress',
+      stroke: 'stroke'
+    } as const)[context.event];
+    const allowed = this.dialogueDirector.shouldShowDialogue(
+      intent,
+      this.settings,
+      performance.now(),
+      this.forceDialogueInDev
+    );
+    if (import.meta.env.DEV) {
+      console.info(
+        `[dialogue] event=${context.event} group=${context.dialogueGroup ?? context.event} allowed=${allowed} textFound=${Boolean(text.trim())}`
+      );
+    }
+    if (allowed && text.trim()) {
+      this.callbacks.showDialogue(text, context);
+      this.dialogueDirector.recordDialogueShown();
+    }
   }
 
   public destroy() {
     this.recognizer.unbindEvents();
     this.element.removeEventListener('pointermove', this.handlePointerMoveHover);
     this.debugOverlay.setEnabled(false);
+    this.element.classList.remove('is-interactive-hover');
   }
 }

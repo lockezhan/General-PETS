@@ -2,13 +2,13 @@ import { InteractionIntent } from './natural-types';
 import { PetSettings } from '../../shared/pet-settings';
 
 const PROBABILITIES: Record<InteractionIntent | "ambient", number> = {
-  tap: 0.35,
-  doubleTap: 0.45,
-  rapidTap: 0.75,
-  longPress: 0.45,
-  stroke: 0.30,
-  pickup: 0.20,
-  ambient: 0.15,
+  tap: 0.55,
+  doubleTap: 0.70,
+  rapidTap: 1.00,
+  longPress: 0.80,
+  stroke: 0.40,
+  pickup: 0.00,
+  ambient: 0.10,
   none: 0,
 };
 
@@ -19,14 +19,17 @@ export function getDialogueDurationMs(text: string): number {
 }
 
 export class DialogueDirector {
-  private lastDialogueAt: number = 0;
+  private lastDialogueAt: number = Number.NEGATIVE_INFINITY;
   private strokeDialogueShown: boolean = false;
 
   public shouldShowDialogue(
     intent: InteractionIntent | "ambient",
     settings: PetSettings,
-    now: number = performance.now()
+    now: number = performance.now(),
+    forceInDev: boolean = false,
+    baseProbabilityOverride?: number
   ): boolean {
+    if (forceInDev && intent !== "pickup") return true;
     if (!settings.randomDialogueEnabled) return false;
 
     // 2500ms 冷却限制 (rapidTap 允许突破一次普通冷却)
@@ -39,9 +42,9 @@ export class DialogueDirector {
       if (this.strokeDialogueShown) return false;
     }
 
-    let baseProb = PROBABILITIES[intent] || 0.15;
+    let baseProb = baseProbabilityOverride ?? PROBABILITIES[intent] ?? 0.15;
     if (settings.dialogueFrequency === "quiet") baseProb *= 0.5;
-    if (settings.dialogueFrequency === "frequent") baseProb *= 1.4;
+    if (settings.dialogueFrequency === "frequent") baseProb = Math.min(1, baseProb * 1.25);
 
     const roll = Math.random();
     const result = roll < baseProb;

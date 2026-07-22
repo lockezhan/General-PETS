@@ -1,5 +1,11 @@
-import { AnimationRenderer, AnimationPlaybackOptions, DistanceDrivenPlayback } from './animation-renderer';
-import { CodexAdapterConfig } from '../codex/codex-types';
+import {
+  AnimationRenderer,
+  AnimationPlaybackOptions,
+  DistanceDrivenPlayback,
+  FramePathPlaybackOptions,
+  AtlasFrameReference,
+} from './animation-renderer';
+import { CodexAdapterConfig, GeneralPetsExtrasConfig } from '../codex/codex-types';
 import { CODEX_ATLAS_CONTRACTS, CODEX_BASE_ANIMATIONS, CODEX_DEFAULT_TIMINGS, CodexV1AnimationName } from '../codex/codex-atlas-contract';
 import { PetState } from '../../shared/character-types';
 import { AnimationClock } from './animation-clock';
@@ -13,8 +19,11 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private atlasImage: HTMLImageElement;
+  private extrasImage: HTMLImageElement | null = null;
+  private extrasConfig: GeneralPetsExtrasConfig | null = null;
   
   private clock: AnimationClock;
+  private speedMultiplier = 1.0;
 
   private currentAnimation: string | null = null;
   private currentMappedAnimation: CodexV1AnimationName = 'idle';
@@ -26,17 +35,29 @@ export class CodexAtlasRenderer implements AnimationRenderer {
 
   private onCompleteCallback: ((nextState: PetState) => void) | null = null;
   private currentFrameIndex = 0;
+  private currentFramePath: AtlasFrameReference[] | null = null;
   private loopEnabled = true;
 
   private displayWidth = 192;
   private displayHeight = 208;
 
-  constructor(element: HTMLImageElement, spritesheetUrl: string, adapterConfig: CodexAdapterConfig) {
+  constructor(
+    element: HTMLImageElement,
+    spritesheetUrl: string,
+    adapterConfig: CodexAdapterConfig,
+    extrasConfig?: GeneralPetsExtrasConfig | null,
+    extrasSpritesheetUrl?: string | null,
+  ) {
     this.element = element;
     this.spritesheetUrl = spritesheetUrl;
     this.adapter = adapterConfig;
 
     this.atlasImage = new Image();
+    this.extrasConfig = extrasConfig ?? null;
+    if (this.extrasConfig && extrasSpritesheetUrl) {
+      this.extrasImage = new Image();
+      this.extrasImage.src = extrasSpritesheetUrl;
+    }
 
     this.clock = new AnimationClock({
       onFrameChange: (frameIndex) => {
@@ -87,7 +108,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.canvas.style.width = `${this.displayWidth}px`;
     this.canvas.style.height = `${this.displayHeight}px`;
 
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
 
     if (parent) {
       parent.insertBefore(this.viewport, this.element);
@@ -107,14 +128,10 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   async load(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this.atlasImage.complete && this.atlasImage.naturalWidth > 0) {
-        resolve();
-        return;
-      }
-      this.atlasImage.onload = () => resolve();
-      this.atlasImage.onerror = (e) => reject(new Error(`Failed to load atlas image: ${e}`));
-    });
+    await Promise.all([
+      this.loadImage(this.atlasImage, 'atlas'),
+      ...(this.extrasImage ? [this.loadImage(this.extrasImage, 'extras atlas')] : []),
+    ]);
   }
 
   hasAnimation(name: string): boolean {
@@ -139,12 +156,18 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.playbackMode = 'clock';
 
     this.currentAnimation = resolvedName;
+    this.currentFramePath = null;
     this.currentMappedAnimation = mapped;
     this.currentConfig = config;
     this.onCompleteCallback = options?.onComplete || null;
     this.loopEnabled = options?.loop !== undefined ? options.loop : defaultTiming.loop;
 
-    let timing = { ...defaultTiming };
+    let timing = {
+      ...defaultTiming,
+      ...(this.adapter.animationSequences?.[mapped]
+        ? { frameSequence: [...this.adapter.animationSequences[mapped]!] }
+        : {}),
+    };
     if (options?.timingOverride) {
       timing = { ...timing, ...options.timingOverride };
     }
@@ -155,9 +178,48 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       timing = { ...timing, fallback: options.fallback };
     }
 
-    const speed = options?.speedMultiplier !== undefined ? options.speedMultiplier : 1.0;
+    const speed = options?.speedMultiplier ?? this.speedMultiplier;
     this.traceAnimationRequest(name, resolvedName, mapped, config.row, true);
     this.clock.play(resolvedName, timing, config.frameCount, speed);
+  }
+
+  playStaticFrame(row: number, column: number, source: "primary" | "extras" = "primary"): boolean {
+    if (!this.isValidAtlasFrame({ row, column, source })) return false;
+    this.clock.stop();
+    this.playbackMode = 'stopped';
+    this.currentAnimation = 'static-frame';
+    this.currentConfig = null;
+    this.currentFramePath = [{ row, column, source }];
+    this.currentFrameIndex = 0;
+    this.renderFrame();
+    return true;
+  }
+
+  playFramePath(options: FramePathPlaybackOptions): boolean {
+    if (
+      options.frames.length === 0 ||
+      options.frames.length > 32 ||
+      options.frames.some((frame) => !this.isValidAtlasFrame(frame))
+    ) {
+      return false;
+    }
+    this.clock.stop();
+    this.playbackMode = 'clock';
+    this.currentAnimation = 'lookAround';
+    this.currentConfig = null;
+    this.currentFramePath = options.frames.map((frame) => ({
+      ...frame,
+      source: frame.source ?? 'primary',
+    }));
+    this.onCompleteCallback = options.onComplete ? () => options.onComplete?.() : null;
+    const durations = this.currentFramePath.map((frame) => frame.durationMs ?? 500);
+    this.clock.play('lookAround', {
+      frameDurationMs: 500,
+      frameDurationsMs: durations,
+      loop: options.loop ?? false,
+      fallback: 'idle',
+    }, this.currentFramePath.length, options.speedMultiplier ?? this.speedMultiplier);
+    return true;
   }
 
   beginDistanceDriven(config: DistanceDrivenPlayback): void {
@@ -174,9 +236,12 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.clock.stop();
     this.playbackMode = 'distance';
     this.currentAnimation = logical;
+    this.currentFramePath = null;
     this.currentMappedAnimation = mapped;
     this.currentConfig = baseConfig;
     this.distanceConfig = config;
+    this.currentFrameIndex = 0;
+    this.renderFrame();
   }
 
   updateDistanceDriven(totalLogicalDistance: number): void {
@@ -250,7 +315,8 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   updateSpeedMultiplier(speed: number): void {
-    this.clock.updateSpeedMultiplier(speed);
+    this.speedMultiplier = Math.max(0.5, Math.min(1.5, speed));
+    this.clock.updateSpeedMultiplier(this.speedMultiplier);
   }
 
   destroy(): void {
@@ -288,17 +354,23 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     ctx.clearRect(0, 0, this.displayWidth, this.displayHeight);
     ctx.imageSmoothingEnabled = false;
 
-    if (!this.currentConfig) return;
+    const pathFrame = this.currentFramePath?.[this.currentFrameIndex];
+    if (!this.currentConfig && !pathFrame) return;
 
     const ver = this.adapter.spriteVersionNumber || 1;
     const contract = CODEX_ATLAS_CONTRACTS[ver];
 
-    const row = this.currentConfig.row;
-    const col = this.currentFrameIndex;
+    const row = pathFrame?.row ?? this.currentConfig!.row;
+    const col = pathFrame?.column ?? this.currentFrameIndex;
+    const useExtras = pathFrame?.source === 'extras';
+    const sourceImage = useExtras ? this.extrasImage : this.atlasImage;
+    const frameWidth = useExtras ? this.extrasConfig!.frameWidth : contract.frameWidth;
+    const frameHeight = useExtras ? this.extrasConfig!.frameHeight : contract.frameHeight;
+    if (!sourceImage) return;
 
     // Integer source coordinates to guarantee no subpixel boundary bleeding
-    const sourceX = Math.floor(col * contract.frameWidth);
-    const sourceY = Math.floor(row * contract.frameHeight);
+    const sourceX = Math.floor(col * frameWidth);
+    const sourceY = Math.floor(row * frameHeight);
 
     const isDirectionalWalk =
       this.currentMappedAnimation === 'running-left' ||
@@ -309,16 +381,16 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       this.viewport.style.transform = 'none';
     }
 
-    if (this.facing === 'left' && !isDirectionalWalk) {
+    if (this.facing === 'left' && !isDirectionalWalk && !pathFrame) {
       ctx.save();
       ctx.translate(this.displayWidth, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(
-        this.atlasImage,
+        sourceImage,
         sourceX,
         sourceY,
-        contract.frameWidth,
-        contract.frameHeight,
+        frameWidth,
+        frameHeight,
         0,
         0,
         this.displayWidth,
@@ -327,11 +399,11 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       ctx.restore();
     } else {
       ctx.drawImage(
-        this.atlasImage,
+        sourceImage,
         sourceX,
         sourceY,
-        contract.frameWidth,
-        contract.frameHeight,
+        frameWidth,
+        frameHeight,
         0,
         0,
         this.displayWidth,
@@ -345,6 +417,30 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       return this.facing === 'left' ? 'walkLeft' : 'walkRight';
     }
     return name;
+  }
+
+  private loadImage(image: HTMLImageElement, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (image.complete && image.naturalWidth > 0) {
+        resolve();
+        return;
+      }
+      image.onload = () => resolve();
+      image.onerror = (error) => reject(new Error(`Failed to load ${label}: ${error}`));
+    });
+  }
+
+  private isValidAtlasFrame(frame: AtlasFrameReference): boolean {
+    if (!Number.isInteger(frame.row) || !Number.isInteger(frame.column) || frame.row < 0 || frame.column < 0) {
+      return false;
+    }
+    if (frame.source === 'extras') {
+      if (!this.extrasConfig || !this.extrasImage) return false;
+      const animation = this.extrasConfig.animations.lookAround;
+      return !!animation && frame.row === animation.row && frame.column < animation.frameCount;
+    }
+    const contract = CODEX_ATLAS_CONTRACTS[this.adapter.spriteVersionNumber || 1];
+    return frame.row < contract.rows && frame.column < contract.columns;
   }
 
   private resolveMappedAnimation(name: string): CodexV1AnimationName | null {

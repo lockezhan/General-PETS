@@ -1,7 +1,15 @@
 import { CharacterManifest } from '../shared/character-types';
 import { validateCharacterManifest } from './character-validator';
 import { invoke } from '@tauri-apps/api/core';
-import { CharacterSource, CodexAdapterConfig } from './codex/codex-types';
+import {
+  CharacterCapabilities,
+  CharacterSource,
+  CodexAdapterConfig,
+  GeneralPetsExtrasConfig,
+} from './codex/codex-types';
+import { CodexCharacterAdapter } from './codex/codex-character-adapter';
+import { resolveCharacterCapabilities } from './codex/character-capabilities';
+import { applyVerifiedAdapterOverride } from './codex/verified-adapter-overrides';
 
 export class CharacterLoader {
   private characterId: string;
@@ -9,6 +17,7 @@ export class CharacterLoader {
   private source: CharacterSource | null = null;
   private frameCache: Map<string, string[]> = new Map();
   private adapterConfig: CodexAdapterConfig | null = null;
+  private extrasConfig: GeneralPetsExtrasConfig | null = null;
   private dialoguesCache: any = null;
   private interactionsCache: any = null;
 
@@ -22,6 +31,14 @@ export class CharacterLoader {
 
   getAdapterConfig(): CodexAdapterConfig | null {
     return this.adapterConfig;
+  }
+
+  getExtrasConfig(): GeneralPetsExtrasConfig | null {
+    return this.extrasConfig;
+  }
+
+  getCapabilities(): CharacterCapabilities {
+    return resolveCharacterCapabilities(this.adapterConfig, this.extrasConfig);
   }
 
   getCharacterSource(): CharacterSource | null {
@@ -41,6 +58,8 @@ export class CharacterLoader {
       this.source = await this.resolveSource(this.characterId);
       
       if (this.source.kind === 'builtin') {
+        this.adapterConfig = null;
+        this.extrasConfig = null;
         const res = await fetch(`${this.source.rootUrl}/character.json`);
         if (!res.ok) throw new Error(`Failed to load built-in character: ${res.statusText}`);
         const json = await res.json();
@@ -57,8 +76,16 @@ export class CharacterLoader {
         const configs: any = await invoke('load_installed_character_configs', { id: this.characterId });
         console.log(`[CharacterLoader] load_installed_character_configs success for ${this.characterId}`);
         
-        this.adapterConfig = configs.adapter as CodexAdapterConfig;
         const petJson = configs.pet;
+        const sourcePetId = typeof configs.adapter?.sourcePetId === 'string'
+          ? configs.adapter.sourcePetId
+          : (typeof petJson.id === 'string' ? petJson.id : this.characterId);
+        const adapterWithVerifiedQa = applyVerifiedAdapterOverride(configs.adapter, sourcePetId);
+        this.adapterConfig = CodexCharacterAdapter.normalizeCodexAdapterConfig(
+          adapterWithVerifiedQa,
+          sourcePetId,
+        );
+        this.extrasConfig = CodexCharacterAdapter.normalizeExtrasConfig(configs.extras);
         this.dialoguesCache = configs.dialogues;
         this.interactionsCache = configs.interactions;
 

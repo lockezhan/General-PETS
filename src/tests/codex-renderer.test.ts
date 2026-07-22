@@ -134,6 +134,9 @@ describe('CodexAtlasRenderer', () => {
     renderer.updateDistanceDriven(72); // Full stride -> phase 0 -> frame 0
     expect((renderer as any).currentFrameIndex).toBe(0);
 
+    renderer.updateDistanceDriven(288); // Four full 72px gait cycles -> frame 0
+    expect((renderer as any).currentFrameIndex).toBe(0);
+
     renderer.endDistanceDriven('idle');
     expect(renderer.getPlaybackMode()).toBe('clock');
     expect(renderer.getCurrentAnimation()).toBe('idle');
@@ -191,6 +194,22 @@ describe('CodexAtlasRenderer', () => {
     renderer.destroy();
   });
 
+  it('should play standard running names directly on their Codex rows', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+
+    renderer.play('running-left');
+    expect((renderer as any).currentMappedAnimation).toBe('running-left');
+    expect((renderer as any).currentConfig.row).toBe(2);
+
+    renderer.play('running-right');
+    expect((renderer as any).currentMappedAnimation).toBe('running-right');
+    expect((renderer as any).currentConfig.row).toBe(1);
+
+    renderer.destroy();
+  });
+
   it('should not mirror viewport when facing is left for directional or non-directional animations', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
@@ -205,6 +224,23 @@ describe('CodexAtlasRenderer', () => {
     // Canvas handles internal context mirroring, viewport transform stays 'none' to avoid double-mirroring
     expect(viewport.style.transform).toBe('none');
 
+    renderer.destroy();
+  });
+
+  it('should render the first frame immediately when distance playback begins', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const renderSpy = vi.spyOn(renderer, 'renderFrame');
+
+    renderer.beginDistanceDriven({
+      animation: 'walkLeft',
+      frameCount: 8,
+      strideLengthPx: 120
+    });
+
+    expect(renderSpy).toHaveBeenCalled();
+    expect((renderer as any).currentFrameIndex).toBe(0);
     renderer.destroy();
   });
 
@@ -294,6 +330,72 @@ describe('CodexAtlasRenderer', () => {
       renderer.destroy();
     }
   );
+
+  it('plays a verified V2 row/column path and returns to the completion callback', () => {
+    vi.useFakeTimers();
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(
+      element,
+      'asset://localhost/spritesheet.webp',
+      { ...adapterConfig, spriteVersionNumber: 2 },
+    );
+    const onComplete = vi.fn();
+
+    expect(renderer.playFramePath({
+      frames: [
+        { row: 0, column: 4, durationMs: 300 },
+        { row: 9, column: 2, durationMs: 400 },
+        { row: 9, column: 4, durationMs: 800 },
+      ],
+      onComplete,
+    })).toBe(true);
+    expect((renderer as any).currentFramePath[0]).toMatchObject({ row: 0, column: 4 });
+    vi.advanceTimersByTime(300);
+    expect((renderer as any).currentFrameIndex).toBe(1);
+    vi.advanceTimersByTime(1200);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    renderer.destroy();
+    vi.useRealTimers();
+  });
+
+  it('plays V1 look-around frames from a validated extras atlas', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const extras = {
+      schemaVersion: 1 as const,
+      spritesheetPath: 'general-pets-extras.webp',
+      frameWidth: 192,
+      frameHeight: 208,
+      animations: {
+        lookAround: {
+          row: 0,
+          frameCount: 8,
+          frameSequence: [0, 1, 0],
+          frameDurationsMs: [600, 400, 600],
+        },
+      },
+    };
+    const renderer = new CodexAtlasRenderer(
+      element,
+      'asset://localhost/spritesheet.webp',
+      adapterConfig,
+      extras,
+      'asset://localhost/general-pets-extras.webp',
+    );
+    expect(renderer.playFramePath({
+      frames: [
+        { row: 0, column: 0, source: 'extras', durationMs: 600 },
+        { row: 0, column: 1, source: 'extras', durationMs: 400 },
+      ],
+    })).toBe(true);
+    expect((renderer as any).currentFramePath[1]).toMatchObject({
+      row: 0,
+      column: 1,
+      source: 'extras',
+    });
+    renderer.destroy();
+  });
 });
 
 describe('CharacterLoader with Codex installed pets', () => {

@@ -13,6 +13,7 @@ export class ActionDirector {
   private currentRequest: PetActionRequest | null = null;
   private activeToken: number = 0;
   private holdTimer: number | null = null;
+  private actionStartedAt = 0;
 
   constructor(player: AnimationRenderer) {
     this.player = player;
@@ -23,6 +24,13 @@ export class ActionDirector {
   }
 
   public requestAction(request: PetActionRequest): boolean {
+    if (request.animation === "idle" && request.priority === "system" && request.loop !== false) {
+      if (import.meta.env.DEV) {
+        console.error("[action-director] invalid-system-idle-loop", request);
+      }
+      return false;
+    }
+
     const currentPriority = this.currentRequest ? PRIORITY_LEVELS[this.currentRequest.priority] : 0;
     const requestPriority = PRIORITY_LEVELS[request.priority];
 
@@ -44,7 +52,7 @@ export class ActionDirector {
     // 2. 优先级判定：请求优先级必须大于等于当前动作
     if (requestPriority < currentPriority) {
       console.log(
-        `[action-director] request rejected: req=${request.id}(${request.priority}) < current=${this.currentRequest?.id}(${this.currentRequest?.priority})`
+        `[action-director] request rejected: req=${request.id}(${request.priority}) < current=${this.currentRequest?.id}(${this.currentRequest?.priority}) blockedBy=${this.currentRequest?.id}`
       );
       return false;
     }
@@ -56,6 +64,7 @@ export class ActionDirector {
 
     const newToken = ++this.activeToken;
     this.currentRequest = request;
+    this.actionStartedAt = performance.now();
 
     console.log(
       `[action-director] action started token=${newToken} id=${request.id} anim=${request.animation} pri=${request.priority}`
@@ -63,40 +72,63 @@ export class ActionDirector {
 
     const isLoopingByDefault = ['idle', 'waiting', 'running'].includes(request.animation) || request.animation.startsWith('walk');
     const shouldLoop = request.loop ?? isLoopingByDefault;
+    const repeatCount = shouldLoop
+      ? 1
+      : Math.max(1, Math.min(4, Math.floor(request.repeatCount ?? 1)));
+    let completedRuns = 0;
 
-    this.player.play(request.animation, {
-      loop: shouldLoop,
-      fallback: request.fallback ?? "idle",
-      timingOverride: request.timingOverride,
-      onComplete: (_nextState) => {
-        // Token 保护：确保旧的回调不会影响后来发布的新 Action
-        if (this.activeToken === newToken) {
-          console.log(`[action-director] action completed token=${newToken} id=${request.id}`);
-          
-          const finishAction = () => {
-            if (this.activeToken !== newToken) return;
-            this.currentRequest = null;
-            if (request.onComplete) {
-              request.onComplete();
-            }
-            if (request.fallback && request.fallback !== request.animation) {
-              this.requestAction({
-                id: `fallback-${request.id}`,
-                animation: request.fallback,
-                priority: request.priority === "system" ? "system" : "ambient",
-                source: "behavior"
-              });
-            }
-          };
-
-          if (request.holdAfterMs && request.holdAfterMs > 0) {
-            this.holdTimer = window.setTimeout(finishAction, request.holdAfterMs);
-          } else {
-            finishAction();
-          }
-        }
+    const finishAction = () => {
+      if (this.activeToken !== newToken) return;
+      this.currentRequest = null;
+      if (request.onComplete) {
+        request.onComplete();
       }
-    });
+      // An explicit completion handler may have entered a new action
+      // (for example landing -> idle). Never enqueue a stale fallback
+      // after that transition.
+      if (this.activeToken !== newToken) return;
+      if (request.fallback && request.fallback !== request.animation) {
+        this.requestAction({
+          id: `fallback-${request.id}`,
+          animation: request.fallback,
+          priority: "ambient",
+          source: "behavior"
+        });
+      }
+    };
+
+    const completeFinalRun = () => {
+      if (this.activeToken !== newToken) return;
+      console.log(`[action-director] action completed token=${newToken} id=${request.id} repeats=${completedRuns}`);
+      const elapsed = performance.now() - this.actionStartedAt;
+      const minimumRemaining = Math.max(0, (request.minimumVisibleMs ?? 0) - elapsed);
+      const finalDelay = minimumRemaining + (request.holdAfterMs ?? 0);
+      if (finalDelay > 0) {
+        this.holdTimer = window.setTimeout(finishAction, finalDelay);
+      } else {
+        finishAction();
+      }
+    };
+
+    const playRun = () => {
+      if (this.activeToken !== newToken) return;
+      this.player.play(request.animation, {
+        loop: shouldLoop,
+        fallback: request.fallback,
+        timingOverride: request.timingOverride,
+        onComplete: (_nextState) => {
+          if (this.activeToken !== newToken) return;
+          completedRuns++;
+          if (!shouldLoop && completedRuns < repeatCount) {
+            playRun();
+            return;
+          }
+          completeFinalRun();
+        }
+      });
+    };
+
+    playRun();
 
     return true;
   }
@@ -107,6 +139,12 @@ export class ActionDirector {
 
   public getActiveToken(): number {
     return this.activeToken;
+  }
+
+  public getCurrentActionLabel(): string | null {
+    return this.currentRequest
+      ? `${this.currentRequest.id}(${this.currentRequest.priority})`
+      : null;
   }
 
   public clearCurrentAction(reason: string) {

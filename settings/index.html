@@ -47,15 +47,16 @@
           <label for="walkSpeedMultiplier">行走速度倍率 (0.5x - 2.0x)</label>
           <input type="range" id="walkSpeedMultiplier" min="0.5" max="2.0" step="0.1" value="1" />
           <span id="walkSpeedMultiplier-value" class="val-indicator">1.0x</span>
+          <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">影响自动行走的窗口位移速度；腿部节奏会根据实际位移自动同步。</div>
         </div>
         <div class="setting-item">
           <label for="animationSpeedMultiplier">动画速度 (0.5x - 1.5x)</label>
           <input type="range" id="animationSpeedMultiplier" min="0.5" max="1.5" step="0.1" value="1" />
           <span id="animationSpeedMultiplier-value" class="val-indicator">1.0x (标准)</span>
-          <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">只调整角色动作速度，不影响桌宠移动速度。</div>
+          <div style="font-size: 11px; color: #7f8c8d; margin-top: 4px;">影响待机、挥手、跳跃、失败、等待和检视等帧动画。</div>
         </div>
         <div class="setting-item">
-          <label><input type="checkbox" id="gravityEnabled" /> 拖动释放后启用下落物理</label>
+          <label><input type="checkbox" id="gravityEnabled" /> 启用明确触发的下落物理（普通拖放不会下落）</label>
         </div>
         <div class="setting-item">
           <label for="edgeBehavior">边缘行为</label>

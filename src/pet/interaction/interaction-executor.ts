@@ -1,8 +1,8 @@
-import { InteractionAction } from './interaction-types';
+import { InteractionAction, InteractionExecutionContext } from './interaction-types';
 
 export interface ExecutorCallbacks {
-  playAnimation: (animName: string, fallback?: string) => void;
-  showDialogue: (text: string) => void;
+  playAnimation: (animName: string, fallback: string | undefined, context: InteractionExecutionContext) => boolean | void;
+  showDialogue: (text: string, context: InteractionExecutionContext) => void;
   resetBehaviorTimer: () => void;
   cancelMotion: () => void;
   setFacing: (facing: "left" | "right") => void;
@@ -16,17 +16,20 @@ export class InteractionExecutor {
     this.callbacks = callbacks;
   }
 
-  public executeActions(actions: InteractionAction[]) {
+  public executeActions(actions: InteractionAction[], context: InteractionExecutionContext) {
     for (const action of actions) {
       try {
         switch (action.type) {
           case "playAnimation":
-            this.callbacks.playAnimation(action.animation, action.fallback);
+            this.callbacks.playAnimation(action.animation, action.fallback, context);
             break;
           case "showDialogue": {
             const text = this.callbacks.getRandomDialogueFromGroup(action.group);
             if (text) {
-              this.callbacks.showDialogue(text);
+              this.callbacks.showDialogue(text, {
+                ...context,
+                dialogueGroup: action.group
+              });
             } else {
               console.warn(`[executor] Dialogue group "${action.group}" not found or empty`);
             }

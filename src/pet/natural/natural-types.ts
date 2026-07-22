@@ -73,6 +73,7 @@ export interface PetActionRequest {
   fallback?: string;
   minimumVisibleMs?: number;
   holdAfterMs?: number;
+  repeatCount?: number;
   source: "user" | "behavior" | "system";
   timingOverride?: Partial<AnimationTiming>;
   loop?: boolean;

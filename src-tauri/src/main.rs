@@ -791,12 +791,23 @@ fn load_installed_character_configs(app: tauri::AppHandle, id: String) -> Result
         } else {
             serde_json::json!(null)
         };
+
+        let extras_json_path = char_dir.join("general-pets-extras.json");
+        let extras_json: serde_json::Value = if extras_json_path.exists() {
+            let content = std::fs::read_to_string(&extras_json_path)
+                .map_err(|e| format!("Failed to read extras config: {}", e))?;
+            serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse extras config: {}", e))?
+        } else {
+            serde_json::json!(null)
+        };
         
         Ok(serde_json::json!({
             "pet": pet_json,
             "adapter": adapter_json,
             "dialogues": dialogues_json,
-            "interactions": interactions_json
+            "interactions": interactions_json,
+            "extras": extras_json
         }))
     } else {
         Err(format!("Character '{}' not found in index", id))
@@ -1175,15 +1186,27 @@ fn export_codex_animation_contact_sheet(
         .map_err(|e| format!("Failed to open spritesheet image: {}", e))?;
 
     let (row, frame_count) = match animation_name.as_str() {
+        "idle" => (0, 6),
         "running-right" => (1, 8),
         "running-left" => (2, 8),
         "running" => (7, 6),
+        "look-row-9" => (9, 8),
+        "look-row-10" => (10, 8),
         _ => return Err(format!("Unsupported animation name for contact sheet: {}", animation_name)),
     };
 
     let frame_width: u32 = 192;
     let frame_height: u32 = 208;
     let header_height: u32 = 24;
+
+    if img.width() < frame_width * frame_count || img.height() < frame_height * (row + 1) {
+        return Err(format!(
+            "Spritesheet is too small for animation '{}': {}x{}",
+            animation_name,
+            img.width(),
+            img.height()
+        ));
+    }
 
     let canvas_width = frame_width * frame_count;
     let canvas_height = frame_height + header_height;
@@ -1225,6 +1248,32 @@ fn export_codex_animation_contact_sheet(
     contact_sheet.save(&out_path)
         .map_err(|e| format!("Failed to save contact sheet: {}", e))?;
 
+    let preview_path = if animation_name == "idle" {
+        use image::codecs::gif::{GifEncoder, Repeat};
+        use image::{Delay, Frame};
+        let path = cache_dir.join("idle-preview.gif");
+        let file = std::fs::File::create(&path)
+            .map_err(|e| format!("Failed to create idle preview: {}", e))?;
+        let mut encoder = GifEncoder::new(file);
+        encoder.set_repeat(Repeat::Infinite)
+            .map_err(|e| format!("Failed to configure idle preview: {}", e))?;
+        let frames = (0..frame_count).map(|col| {
+            let frame = image::imageops::crop_imm(
+                &img,
+                col * frame_width,
+                row * frame_height,
+                frame_width,
+                frame_height,
+            ).to_image();
+            Frame::from_parts(frame, 0, 0, Delay::from_numer_denom_ms(550, 1))
+        });
+        encoder.encode_frames(frames)
+            .map_err(|e| format!("Failed to encode idle preview: {}", e))?;
+        Some(path)
+    } else {
+        None
+    };
+
     println!("[codex-probe] Exported contact sheet '{}' for character '{}' -> {:?}", animation_name, character_id, out_path);
 
     Ok(serde_json::json!({
@@ -1234,7 +1283,8 @@ fn export_codex_animation_contact_sheet(
         "row": row,
         "frameCount": frame_count,
         "frameWidth": frame_width,
-        "frameHeight": frame_height
+        "frameHeight": frame_height,
+        "previewPath": preview_path.map(|path| path.to_string_lossy().to_string())
     }))
 }
 

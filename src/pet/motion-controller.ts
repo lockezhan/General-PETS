@@ -15,14 +15,17 @@ export interface MotionProgress {
   totalLogicalDistance: number;
   positionX: number;
   positionY: number;
+  commitCount: number;
 }
 
 export interface ActiveMotion {
   type: "walk" | "fall";
   cancelled: boolean;
   lastTimestamp: number;
-  currentPhysicalX: number;
-  currentPhysicalY: number;
+  desiredPhysicalX: number;
+  desiredPhysicalY: number;
+  committedPhysicalX: number;
+  committedPhysicalY: number;
   physicalWidth: number;
   physicalHeight: number;
   fractionalX: number;
@@ -32,6 +35,9 @@ export interface ActiveMotion {
   targetDurationMs?: number;
   elapsedMs: number;
   totalLogicalDistance: number;
+  positionPromise: Promise<void> | null;
+  hasPendingPosition: boolean;
+  commitCount: number;
   onEdge?: () => void;
   onComplete?: () => void;
   onProgress?: (progress: MotionProgress) => void;
@@ -40,7 +46,6 @@ export interface ActiveMotion {
 export class MotionController {
   private activeMotion: ActiveMotion | null = null;
   private animFrameId: number | null = null;
-  private isSettingPosition: boolean = false;
 
   public cancelActiveMotion(reason: string) {
     if (this.activeMotion) {
@@ -79,8 +84,10 @@ export class MotionController {
         type: "walk",
         cancelled: false,
         lastTimestamp: performance.now(),
-        currentPhysicalX: currentPos.x,
-        currentPhysicalY: currentPos.y,
+        desiredPhysicalX: currentPos.x,
+        desiredPhysicalY: currentPos.y,
+        committedPhysicalX: currentPos.x,
+        committedPhysicalY: currentPos.y,
         physicalWidth: outerSize.width,
         physicalHeight: outerSize.height,
         fractionalX: 0,
@@ -90,6 +97,9 @@ export class MotionController {
         targetDurationMs: durationMs,
         elapsedMs: 0,
         totalLogicalDistance: 0,
+        positionPromise: null,
+        hasPendingPosition: false,
+        commitCount: 0,
         onEdge,
         onComplete,
         onProgress
@@ -124,8 +134,10 @@ export class MotionController {
         type: "fall",
         cancelled: false,
         lastTimestamp: performance.now(),
-        currentPhysicalX: currentPos.x,
-        currentPhysicalY: currentPos.y,
+        desiredPhysicalX: currentPos.x,
+        desiredPhysicalY: currentPos.y,
+        committedPhysicalX: currentPos.x,
+        committedPhysicalY: currentPos.y,
         physicalWidth: outerSize.width,
         physicalHeight: outerSize.height,
         fractionalX: 0,
@@ -134,6 +146,9 @@ export class MotionController {
         velocityY: 0,
         elapsedMs: 0,
         totalLogicalDistance: 0,
+        positionPromise: null,
+        hasPendingPosition: false,
+        commitCount: 0,
         onComplete
       };
       
@@ -165,10 +180,8 @@ export class MotionController {
     motion.lastTimestamp = now;
     motion.elapsedMs += deltaSeconds * 1000;
 
-    let nextPhysicalX = motion.currentPhysicalX;
-    let nextPhysicalY = motion.currentPhysicalY;
-    let deltaLogicalX = 0;
-    let deltaLogicalY = 0;
+    let nextPhysicalX = motion.desiredPhysicalX;
+    let nextPhysicalY = motion.desiredPhysicalY;
     let hitEdge = false;
     let hitFloor = false;
 
@@ -180,7 +193,7 @@ export class MotionController {
       const pixelsToMoveX = Math.trunc(motion.fractionalX);
       motion.fractionalX -= pixelsToMoveX;
       
-      let targetX = motion.currentPhysicalX + pixelsToMoveX;
+      let targetX = motion.desiredPhysicalX + pixelsToMoveX;
       
       const minX = floorInfo.workAreaLeft + (EDGE_PADDING * floorInfo.scaleFactor);
       const maxX = floorInfo.workAreaRight - motion.physicalWidth - (EDGE_PADDING * floorInfo.scaleFactor);
@@ -194,7 +207,6 @@ export class MotionController {
       }
       
       nextPhysicalX = targetX;
-      deltaLogicalX = (nextPhysicalX - motion.currentPhysicalX) / floorInfo.scaleFactor;
     } 
     else if (motion.type === "fall") {
       motion.velocityY = Math.min(motion.velocityY + DEFAULT_GRAVITY * deltaSeconds, MAX_FALL_SPEED);
@@ -206,7 +218,7 @@ export class MotionController {
       const pixelsToMoveY = Math.trunc(motion.fractionalY);
       motion.fractionalY -= pixelsToMoveY;
       
-      let targetY = motion.currentPhysicalY + pixelsToMoveY;
+      let targetY = motion.desiredPhysicalY + pixelsToMoveY;
       
       if (targetY >= floorInfo.floorWindowY) {
         targetY = floorInfo.floorWindowY;
@@ -214,54 +226,114 @@ export class MotionController {
       }
       
       nextPhysicalY = targetY;
-      deltaLogicalY = (nextPhysicalY - motion.currentPhysicalY) / floorInfo.scaleFactor;
     }
 
-    if (motion.currentPhysicalX !== nextPhysicalX || motion.currentPhysicalY !== nextPhysicalY) {
-      motion.currentPhysicalX = nextPhysicalX;
-      motion.currentPhysicalY = nextPhysicalY;
-      
-      motion.totalLogicalDistance += Math.abs(deltaLogicalX);
-
-      // 60FPS 流畅同步触发动画更新
-      motion.onProgress?.({
-        type: motion.type,
-        deltaLogicalX,
-        deltaLogicalY,
-        totalLogicalDistance: motion.totalLogicalDistance,
-        positionX: nextPhysicalX,
-        positionY: nextPhysicalY,
-      });
-
-      // 异步不阻塞 rAF 循环分发 OS 窗口物理位移
-      if (!this.isSettingPosition) {
-        this.isSettingPosition = true;
-        const appWindow = getCurrentWindow();
-        appWindow.setPosition(new PhysicalPosition(nextPhysicalX, nextPhysicalY))
-          .catch((e) => console.error("[motion] Error setPosition:", e))
-          .finally(() => { this.isSettingPosition = false; });
-      }
+    if (motion.desiredPhysicalX !== nextPhysicalX || motion.desiredPhysicalY !== nextPhysicalY) {
+      motion.desiredPhysicalX = nextPhysicalX;
+      motion.desiredPhysicalY = nextPhysicalY;
+      motion.hasPendingPosition =
+        nextPhysicalX !== motion.committedPhysicalX ||
+        nextPhysicalY !== motion.committedPhysicalY;
     }
+    if (motion.hasPendingPosition) void this.flushPosition(motion, floorInfo);
 
     if (motion.cancelled) return;
 
     if (motion.type === "walk") {
       if (hitEdge) {
-        if (motion.onEdge) motion.onEdge();
+        void this.finishMotionAfterFlush(motion, floorInfo, 'edge');
         return;
       }
       if (motion.targetDurationMs && motion.elapsedMs >= motion.targetDurationMs) {
-        if (motion.onComplete) motion.onComplete();
+        void this.finishMotionAfterFlush(motion, floorInfo, 'complete');
         return;
       }
     } else if (motion.type === "fall") {
       if (hitFloor) {
         console.log("[motion] landed");
-        if (motion.onComplete) motion.onComplete();
+        void this.finishMotionAfterFlush(motion, floorInfo, 'complete');
         return;
       }
     }
 
     this.animFrameId = requestAnimationFrame((n) => this.tickMotion(n, floorInfo));
+  }
+
+  private async flushPosition(motion: ActiveMotion, floorInfo: FloorInfo): Promise<boolean> {
+    if (motion.cancelled) return false;
+    if (motion.positionPromise) {
+      await motion.positionPromise;
+      return this.flushPosition(motion, floorInfo);
+    }
+    if (!motion.hasPendingPosition) return true;
+
+    const targetX = motion.desiredPhysicalX;
+    const targetY = motion.desiredPhysicalY;
+    motion.hasPendingPosition = false;
+    let succeeded = true;
+    motion.positionPromise = getCurrentWindow().setPosition(
+      new PhysicalPosition(targetX, targetY)
+    ).catch((error) => {
+      succeeded = false;
+      console.error('[motion] Error setPosition:', error);
+    });
+
+    await motion.positionPromise;
+    motion.positionPromise = null;
+    if (motion.cancelled) return false;
+
+    if (succeeded) {
+      const committedDeltaX = (targetX - motion.committedPhysicalX) / floorInfo.scaleFactor;
+      const committedDeltaY = (targetY - motion.committedPhysicalY) / floorInfo.scaleFactor;
+      motion.committedPhysicalX = targetX;
+      motion.committedPhysicalY = targetY;
+      motion.totalLogicalDistance += Math.abs(committedDeltaX);
+      motion.commitCount++;
+      motion.onProgress?.({
+        type: motion.type,
+        deltaLogicalX: committedDeltaX,
+        deltaLogicalY: committedDeltaY,
+        totalLogicalDistance: motion.totalLogicalDistance,
+        positionX: targetX,
+        positionY: targetY,
+        commitCount: motion.commitCount
+      });
+    } else {
+      motion.hasPendingPosition =
+        motion.desiredPhysicalX !== motion.committedPhysicalX ||
+        motion.desiredPhysicalY !== motion.committedPhysicalY;
+      return false;
+    }
+
+    motion.hasPendingPosition =
+      motion.desiredPhysicalX !== motion.committedPhysicalX ||
+      motion.desiredPhysicalY !== motion.committedPhysicalY;
+    if (motion.hasPendingPosition) {
+      return this.flushPosition(motion, floorInfo);
+    }
+    return true;
+  }
+
+  private async finishMotionAfterFlush(
+    motion: ActiveMotion,
+    floorInfo: FloorInfo,
+    reason: 'edge' | 'complete'
+  ): Promise<void> {
+    if (motion.cancelled || this.activeMotion !== motion) return;
+    const flushed = await this.flushPosition(motion, floorInfo);
+    if (!flushed && !motion.cancelled && this.activeMotion === motion) {
+      this.animFrameId = requestAnimationFrame(() => {
+        void this.finishMotionAfterFlush(motion, floorInfo, reason);
+      });
+      return;
+    }
+    if (motion.cancelled || this.activeMotion !== motion) return;
+    this.animFrameId = null;
+    this.activeMotion = null;
+    if (reason === 'edge') {
+      motion.onEdge?.();
+    } else {
+      motion.onComplete?.();
+    }
   }
 }

@@ -1,4 +1,3 @@
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { InteractionEventType, PointerSession, GesturePhase } from './interaction-types';
 import { StrokeRecognizer } from '../natural/stroke-recognizer';
 import { NaturalPointerSession, InteractionRole } from '../natural/natural-types';
@@ -12,8 +11,14 @@ const CLICK_SUPPRESS_AFTER_DRAG_MS = 300;
 
 export interface RecognizerCallbacks {
   onEvent: (event: InteractionEventType, areaId: string | null, clientX: number, clientY: number) => void;
-  onDragStart: (areaId: string | null, initialDirection: "left" | "right" | null) => void;
-  onDragEnd: (areaId: string | null) => void;
+  onDragStart: (
+    areaId: string | null,
+    initialDirection: "left" | "right" | null,
+    pointerScreenX: number,
+    pointerScreenY: number
+  ) => void;
+  onDragMove?: (pointerScreenX: number, pointerScreenY: number) => void;
+  onDragEnd: (areaId: string | null, reason?: string) => void;
   onStrokeStart?: (areaId: string | null) => void;
   onStrokeProgress?: (areaId: string | null) => void;
   onStrokeEnd?: (areaId: string | null) => void;
@@ -56,6 +61,7 @@ export class InteractionRecognizer {
     window.addEventListener('pointermove', this.handlePointerMove);
     window.addEventListener('pointerup', this.handlePointerUp);
     window.addEventListener('pointercancel', this.handlePointerCancel);
+    window.addEventListener('blur', this.handleWindowBlur);
   }
 
   public unbindEvents() {
@@ -63,6 +69,7 @@ export class InteractionRecognizer {
     window.removeEventListener('pointermove', this.handlePointerMove);
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerCancel);
+    window.removeEventListener('blur', this.handleWindowBlur);
     this.clearTimers();
   }
 
@@ -93,7 +100,7 @@ export class InteractionRecognizer {
     this.session.dragging = false;
     this.lastDragEndedAt = performance.now();
     const areaId = this.session.areaId;
-    this.callbacks.onDragEnd(areaId);
+    this.callbacks.onDragEnd(areaId, reason);
   }
 
   private handlePointerDown = (e: PointerEvent) => {
@@ -173,19 +180,32 @@ export class InteractionRecognizer {
           !this.session.cancelled &&
           (!this.naturalSession || !this.naturalSession.strokeCommitted)
         ) {
-          console.log(`[gesture] longPressEligible set`);
-          this.session.longPressEligible = true;
-          this.session.phase = 'longPressEligible';
-          (this.session as any)._longPressClientX = capturedClientX;
-          (this.session as any)._longPressClientY = capturedClientY;
+          this.session.longPressEligible = false;
+          this.session.longPressTriggered = true;
+          this.session.phase = 'longPressCommitted';
+          this.clearSingleClickTimer();
+          this.clickQueue = [];
+          this.traceLongPressThreshold();
+          this.callbacks.onEvent(
+            "longPress",
+            this.session.areaId,
+            capturedClientX,
+            capturedClientY
+          );
+          console.log(`[gesture] longPress committed while held`);
         }
       }, LONG_PRESS_MS);
     }
     this.callbacks.onPressStart?.();
   };
 
-  private handlePointerMove = async (e: PointerEvent) => {
-    if (!this.session || this.session.phase === 'cancelled' || this.session.phase === 'dragging') return;
+  private handlePointerMove = (e: PointerEvent) => {
+    if (!this.session || this.session.phase === 'cancelled') return;
+
+    if (this.session.phase === 'dragging') {
+      this.callbacks.onDragMove?.(e.screenX, e.screenY);
+      return;
+    }
 
     const deltaX = e.screenX - this.session.startScreenX;
     const deltaY = e.screenY - this.session.startScreenY;
@@ -217,7 +237,12 @@ export class InteractionRecognizer {
     }
 
     // 2. 拖拽判定 (>= 8px)
-    if (distance >= DRAG_THRESHOLD_PX && !this.naturalSession?.strokeCommitted) {
+    if (
+      distance >= DRAG_THRESHOLD_PX &&
+      this.session.phase !== 'longPressCommitted' &&
+      !this.session.longPressTriggered &&
+      !this.naturalSession?.strokeCommitted
+    ) {
       this.clearLongPressTimer();
       this.clearSingleClickTimer();
 
@@ -233,24 +258,14 @@ export class InteractionRecognizer {
             initialDirection = deltaX < 0 ? "left" : "right";
           }
 
-          console.log(`[gesture] native-drag-start initialDirection=${initialDirection ?? 'vertical'}`);
+          console.log(`[gesture] manual-drag-start initialDirection=${initialDirection ?? 'vertical'}`);
           this.callbacks.onPressCancel?.();
-          this.callbacks.onDragStart(this.session.areaId, initialDirection);
-
-          try {
-            this.element.releasePointerCapture(this.session.pointerId);
-          } catch (_) { /* ignore */ }
-
-          const dragStartedAt = performance.now();
-          try {
-            await getCurrentWindow().startDragging();
-          } catch (error) {
-            console.error("[gesture] startDragging failed:", error);
-          } finally {
-            const elapsed = (performance.now() - dragStartedAt).toFixed(0);
-            console.log(`[native-drag] resolved elapsed=${elapsed}ms`);
-            this.finishDrag("native drag resolved");
-          }
+          this.callbacks.onDragStart(
+            this.session.areaId,
+            initialDirection,
+            e.screenX,
+            e.screenY
+          );
         }
       } else if (this.session.phase === 'pending' || this.session.phase === 'longPressEligible') {
         if (!this.naturalSession?.strokeCommitted) {
@@ -302,14 +317,8 @@ export class InteractionRecognizer {
       return;
     }
 
-    if (phase === 'longPressEligible') {
-      const lx = (this.session as any)._longPressClientX ?? e.clientX;
-      const ly = (this.session as any)._longPressClientY ?? e.clientY;
-      console.log(`[gesture] longPress committed on pointerup`);
-      this.tracePointerUp('longPress');
-      this.session.longPressTriggered = true;
-      this.session.phase = 'longPressCommitted';
-      this.callbacks.onEvent("longPress", this.session.areaId, lx, ly);
+    if (phase === 'longPressCommitted' || this.session.longPressTriggered) {
+      this.tracePointerUp('longPress-end');
       this.session = null;
       this.naturalSession = null;
       return;
@@ -387,12 +396,37 @@ export class InteractionRecognizer {
     this.naturalSession = null;
   };
 
+  private handleWindowBlur = () => {
+    if (!this.session) return;
+
+    if (this.session.phase === 'dragging' || this.session.nativeDragRequested) {
+      this.finishDrag('window-blur');
+    }
+
+    this.clearTimers();
+    this.callbacks.onPressCancel?.();
+    this.session.phase = 'cancelled';
+    this.session.cancelled = true;
+    this.session = null;
+    this.naturalSession = null;
+  };
+
   private tracePointerUp(gesture: string): void {
     if (!import.meta.env.DEV) return;
     console.info(
       `[interaction-trace]\n` +
       `phase=pointerup\n` +
       `gesture=${gesture}`
+    );
+  }
+
+  private traceLongPressThreshold(): void {
+    if (!import.meta.env.DEV) return;
+    console.info(
+      `[longpress]\n` +
+      `pointerdown=held\n` +
+      `threshold-reached=650\n` +
+      `committed=true`
     );
   }
 }

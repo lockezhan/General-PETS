@@ -86,27 +86,53 @@ describe('InteractionRecognizer', () => {
     recognizer.unbindEvents();
   });
 
-  it('should trigger longPress after 800ms and not trigger clicks upon release', () => {
+  it('should trigger longPress immediately at the 650ms threshold', () => {
     const recognizer = new InteractionRecognizer(element, callbacks);
 
     firePointerDown(element);
 
-    // Wait 800ms
-    vi.advanceTimersByTime(800);
-
-    // Deferred commit: not immediately triggered
-    expect(eventsDispatched.length).toBe(0);
+    // Threshold commit happens while the pointer is still held.
+    vi.advanceTimersByTime(651);
+    expect(eventsDispatched.length).toBe(1);
+    expect(eventsDispatched[0]).toEqual({ event: 'longPress', areaId: 'head' });
 
     // Release mouse -> triggers now
     firePointerUp(element);
 
     expect(eventsDispatched.length).toBe(1);
-    expect(eventsDispatched[0]).toEqual({ event: 'longPress', areaId: 'head' });
 
     // Verify no single or double click fires after release
     vi.advanceTimersByTime(300);
     expect(eventsDispatched.length).toBe(1); // Still only 1 event
 
+    recognizer.unbindEvents();
+  });
+
+  it('should not commit longPress at 649ms', () => {
+    const recognizer = new InteractionRecognizer(element, callbacks);
+
+    firePointerDown(element);
+    vi.advanceTimersByTime(649);
+
+    expect(eventsDispatched).toHaveLength(0);
+    firePointerUp(element);
+    vi.advanceTimersByTime(300);
+    expect(eventsDispatched).toContainEqual({ event: 'singleClick', areaId: 'head' });
+    recognizer.unbindEvents();
+  });
+
+  it('should enter drag before the longPress threshold and cancel longPress', () => {
+    const recognizer = new InteractionRecognizer(element, callbacks);
+
+    firePointerDown(element, 100, 100);
+    vi.advanceTimersByTime(400);
+    firePointerMove(element, 109, 100);
+
+    expect(dragStarted).toBe(true);
+    vi.advanceTimersByTime(400);
+    expect(eventsDispatched).toHaveLength(0);
+    firePointerUp(element, 109, 100);
+    expect(dragEnded).toBe(true);
     recognizer.unbindEvents();
   });
 
@@ -169,37 +195,36 @@ describe('InteractionRecognizer', () => {
     recognizer.unbindEvents();
   });
 
-  it('should trigger drag but not longPress when moving after 900ms', () => {
+  it('should not enter drag after longPress has already committed', () => {
     const recognizer = new InteractionRecognizer(element, callbacks);
 
     firePointerDown(element, 100, 100);
-    vi.advanceTimersByTime(900);
+    vi.advanceTimersByTime(650);
 
     // Now move past threshold (9px > 8px)
     firePointerMove(element, 109, 100);
-    expect(dragStarted).toBe(true);
+    expect(dragStarted).toBe(false);
+    expect(eventsDispatched).toContainEqual({ event: 'longPress', areaId: 'head' });
 
     firePointerUp(element, 109, 100);
     vi.advanceTimersByTime(300);
 
-    // Expect no longPress and no clicks
-    expect(eventsDispatched.length).toBe(0);
+    // Only the already-committed longPress is present.
+    expect(eventsDispatched.length).toBe(1);
     recognizer.unbindEvents();
   });
 
-  it('should trigger longPress on pointerup after 800ms', () => {
+  it('should not dispatch a second longPress on pointerup', () => {
     const recognizer = new InteractionRecognizer(element, callbacks);
 
     firePointerDown(element, 100, 100);
-    vi.advanceTimersByTime(850);
+    vi.advanceTimersByTime(651);
 
-    // No longPress immediately emitted
-    expect(eventsDispatched.length).toBe(0);
+    expect(eventsDispatched.length).toBe(1);
 
     firePointerUp(element, 100, 100);
-    // Emitted on pointerup
+    // Pointerup only cleans up the committed gesture.
     expect(eventsDispatched.length).toBe(1);
-    expect(eventsDispatched[0]).toEqual({ event: 'longPress', areaId: 'head' });
 
     recognizer.unbindEvents();
   });

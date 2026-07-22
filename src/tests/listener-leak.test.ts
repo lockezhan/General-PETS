@@ -23,6 +23,7 @@ describe('InteractionController Event Listeners', () => {
       getFacing: vi.fn().mockReturnValue('right'),
       hasAnimation: vi.fn().mockReturnValue(true),
       onDragStart: vi.fn(),
+      onDragMove: vi.fn(),
       onDragEnd: vi.fn(),
       onPressVisualStart: vi.fn(),
       onPressVisualCancel: vi.fn()
@@ -95,6 +96,35 @@ describe('InteractionController Event Listeners', () => {
     );
 
     expect((controller as any).getVisualInteractionRect()).toBe(viewportRect);
+    controller.destroy();
+  });
+
+  it('requires an opaque Codex canvas pixel before returning a configured hit area', () => {
+    const viewport = document.createElement('div');
+    viewport.className = 'codex-frame-viewport';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'codex-frame-canvas';
+    canvas.width = 192;
+    canvas.height = 208;
+    const viewportRect = new DOMRect(40, 60, 192, 208);
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(viewportRect);
+    const getImageData = vi.fn();
+    vi.spyOn(canvas, 'getContext').mockReturnValue({ getImageData } as any);
+    viewport.append(canvas, spriteImg);
+    element.appendChild(viewport);
+
+    const controller = new InteractionController(
+      element,
+      spriteImg,
+      debugOverlayDiv,
+      DEFAULT_SETTINGS,
+      callbacks
+    );
+    getImageData.mockReturnValueOnce({ data: new Uint8ClampedArray([0, 0, 0, 0]) });
+    expect((controller as any).findHitAreaAtPoint(136, 164, viewportRect, 'right')).toBeNull();
+
+    getImageData.mockReturnValueOnce({ data: new Uint8ClampedArray([0, 0, 0, 255]) });
+    expect((controller as any).findHitAreaAtPoint(136, 164, viewportRect, 'right')?.id).toBe('body');
     controller.destroy();
   });
 });
