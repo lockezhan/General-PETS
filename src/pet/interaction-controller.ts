@@ -69,7 +69,11 @@ export class InteractionController {
     // Initialize recognizer
     this.recognizer = new InteractionRecognizer(this.element, {
       findArea: (clientX, clientY) => {
-        const spriteRect = this.spriteImg.getBoundingClientRect();
+        let spriteRect = this.spriteImg.getBoundingClientRect();
+        if (spriteRect.width === 0 || spriteRect.height === 0) {
+          const viewport = this.element.querySelector('.codex-frame-viewport') || this.element;
+          spriteRect = viewport.getBoundingClientRect();
+        }
         const facing = this.callbacks.getFacing();
         const area = this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
         this.debugOverlay.updatePointerInfo(clientX, clientY, area ? area.id : null);

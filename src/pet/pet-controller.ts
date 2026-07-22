@@ -1,5 +1,5 @@
 import { CharacterLoader } from './character-loader';
-import { DragDirectionTracker } from './drag-direction-tracker';
+import { DragDirectionTracker, DragProgress } from './drag-direction-tracker';
 import { resolveDirectionalAnimation } from './render/directional-animation-resolver';
 import { AnimationRenderer } from './render/animation-renderer';
 import { FrameSequenceRenderer } from './render/frame-sequence-renderer';
@@ -19,8 +19,8 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { PetStateMachine } from './pet-state-machine';
 import { FacingController } from './facing-controller';
 import { FloorController } from './floor-controller';
-import { MotionController } from './motion-controller';
-import { BehaviorScheduler, BehaviorType } from './behavior-scheduler';
+import { MotionController, MotionProgress } from './motion-controller';
+import { BehaviorScheduler, AutonomousActionDefinition, DEFAULT_CODEX_AUTONOMOUS_ACTIONS } from './behavior-scheduler';
 import { InteractionManifest } from './interaction/interaction-types';
 import { validateInteractions } from './character-validator';
 
@@ -44,6 +44,13 @@ export interface WalkDebugSnapshot {
 
 const MIN_IDLE_DELAY_MS = 30_000;
 const MAX_IDLE_DELAY_MS = 90_000;
+
+export const DEFAULT_CODEX_LOCOMOTION = {
+  walkStrideLengthPx: 120,
+  runStrideLengthPx: 144,
+  walkFrameCount: 8,
+  runFrameCount: 6,
+};
 
 export class PetController {
   private loader: CharacterLoader;
@@ -76,7 +83,6 @@ export class PetController {
   private isDraggingWindow = false;
   private dragAnimTimer: number | null = null;
   private walkRequestId = 0;
-  private currentPlayingAnimation: string | null = null;
 
   private lastShownDialogue = "";
 
@@ -127,13 +133,10 @@ export class PetController {
 
     this.dragDirectionTracker = new DragDirectionTracker(
       (dir) => {
-        // 方向改变时立即切换动画
         this.updateManualDragDirection(dir);
       },
-      (dir) => {
-        // 持续同方向移动：如果当前未处于对应的方向动画，强制切换
-        this.updateManualDragDirection(dir);
-        this.armDraggedIdleFallback();
+      (progress) => {
+        this.handleManualDragProgress(progress);
       }
     );
 
@@ -156,7 +159,6 @@ export class PetController {
       setFacing: (facing: "left" | "right") => {
         const config = this.getMotionConfig();
         const source = this.loader.getCharacterSource();
-        // Directional walking rows bypass layer reflection in Codex
         const isCodex = source && source.kind === 'installed';
         this.facingController.setFacing(facing, isCodex ? false : config.supportsHorizontalFlip);
         this.player.setFacing?.(facing);
@@ -177,7 +179,11 @@ export class PetController {
         this.trySetState('dragged');
         
         this.isDraggingWindow = true;
-        this.dragDirectionTracker.startDrag(initialDirection);
+        getCurrentWindow().scaleFactor().then((scaleFactor) => {
+          this.dragDirectionTracker.startDrag(initialDirection, scaleFactor);
+        }).catch(() => {
+          this.dragDirectionTracker.startDrag(initialDirection, 1.0);
+        });
       },
       onDragEnd: () => {
         this.isDraggingWindow = false;
@@ -187,16 +193,15 @@ export class PetController {
         }
         this.dragDirectionTracker.stopDrag();
         this.motionController.cancelActiveMotion("drag ended");
+        this.player.endDistanceDriven("idle");
         this.floorController.invalidateCache();
         this.handleDragRelease();
       },
       onPressVisualStart: () => {
-        this.player.play('dragged');
-        this.currentPlayingAnimation = 'dragged';
+        this.petRoot.classList.add('is-pressed');
       },
       onPressVisualCancel: () => {
-        const currentState = this.stateMachine.getState();
-        this.playStateAnimation(currentState);
+        this.petRoot.classList.remove('is-pressed');
       }
     };
 
@@ -207,8 +212,6 @@ export class PetController {
       this.settings,
       interactionCallbacks
     );
-
-    // Drag direction movement tracking is handled securely inside DragDirectionTracker using Tauri window event hook
 
     listen<boolean>("window-visibility-changed", (event) => {
         const visible = event.payload;
@@ -261,6 +264,17 @@ export class PetController {
         console.log("[pet-controller] received EVENT_TEST_FALL");
         await this.handleDragRelease();
     });
+
+    // Dev mode screenshot helper
+    (window as any).__exportPetRenderFrame = () => {
+      const canvas = this.petStage.querySelector('canvas');
+      if (canvas) {
+        const dataUrl = canvas.toDataURL('image/png');
+        console.log("[dev-render-frame] Frame exported:", dataUrl);
+        return dataUrl;
+      }
+      return null;
+    };
   }
 
   async init() {
@@ -312,7 +326,6 @@ export class PetController {
       console.error("[pet-controller] failed to load store", e);
     }
     
-    // Fix startup recovery: Recreate loader using recovered settings.characterId
     this.loader = new CharacterLoader(this.settings.characterId);
     
     try {
@@ -369,19 +382,14 @@ export class PetController {
     console.log("[pet-controller] applySettings called with characterId:", newSettings.characterId);
     this.floorController.invalidateCache();
     const characterChanged = this.settings.characterId !== newSettings.characterId;
-    console.log("[pet-controller] applySettings characterChanged:", characterChanged, "currentId:", this.settings.characterId, "newId:", newSettings.characterId);
     
     if (characterChanged) {
       this.motionController.cancelActiveMotion("character changed");
       this.loader = new CharacterLoader(newSettings.characterId);
       try {
-        console.log("[pet-controller] load new character start:", newSettings.characterId);
         await this.loader.load();
-        console.log("[pet-controller] load new character complete");
         this.recreateRenderer();
-        console.log("[pet-controller] recreated renderer");
         await this.player.load();
-        console.log("[pet-controller] player load complete");
         await this.loadDialogues(newSettings.characterId);
         await this.loadInteractions(newSettings.characterId);
         this.trySetState('idle');
@@ -465,7 +473,7 @@ export class PetController {
           }
         }
       } catch (e) {
-        console.warn(`[interactions] Failed to load custom interactions, using virtual whole-sprite mode:`, e);
+        console.warn(`[interactions] Failed to load custom interactions:`, e);
       }
     } else {
       try {
@@ -477,11 +485,10 @@ export class PetController {
           }
         }
       } catch (e) {
-        console.warn(`[interactions] Failed to load built-in interactions.json, using legacy:`, e);
+        console.warn(`[interactions] Failed to load built-in interactions.json:`, e);
       }
     }
     
-    // Fallback to virtual whole-sprite body area if missing
     if (!this.interactionManifest) {
       this.interactionManifest = {
         schemaVersion: 1,
@@ -677,7 +684,7 @@ export class PetController {
       return;
     }
 
-    this.stateMachine.forceState(animName);
+    this.stateMachine.forceState(animName as PetState);
 
     this.player.play(animName, {
       speedMultiplier: this.settings.animationSpeedMultiplier,
@@ -688,7 +695,6 @@ export class PetController {
         }
       }
     });
-    this.currentPlayingAnimation = animName;
   }
   
   private playStateAnimation(state: PetState) {
@@ -700,7 +706,6 @@ export class PetController {
         }
       }
     });
-    this.currentPlayingAnimation = state;
     
     if (state === 'idle') {
         this.scheduleNextBehavior();
@@ -719,22 +724,25 @@ export class PetController {
       if (this.stateMachine.getState() !== 'idle' && this.stateMachine.getState() !== 'sit') {
           return;
       }
-      this.behaviorScheduler.scheduleNext(this.getMotionConfig(), this.settings);
+      const availableActions = DEFAULT_CODEX_AUTONOMOUS_ACTIONS.filter(act => this.player.hasAnimation(act.animation));
+      this.behaviorScheduler.scheduleNext(this.getMotionConfig(), this.settings, availableActions);
   }
 
-  private async handleAutonomousBehavior(type: BehaviorType) {
+  private async handleAutonomousBehavior(action: AutonomousActionDefinition) {
       if (this.stateMachine.getState() !== 'idle' && this.stateMachine.getState() !== 'sit') {
           return;
       }
 
-      if (type === "idle") {
+      console.log(`[behavior] executing autonomous action: ${action.id}`);
+
+      if (action.id === "idle") {
           this.trySetState("idle");
-      } else if (type === "expression") {
-          const randomAction: PetState = Math.random() > 0.5 ? "happy" : "angry";
-          this.handleLegacyAction(randomAction, "idle");
-      } else if (type === "sit") {
+      } else if (action.id === "walk") {
+          const dir = Math.random() > 0.5 ? "left" : "right";
+          this.startWalk({ reason: 'autonomous', direction: dir });
+      } else if (action.id === "sit") {
           if (!this.trySetState("sit")) return;
-          const sitDuration = Math.random() * 7000 + 3000;
+          const sitDuration = Math.random() * 5000 + 3000;
           if (this.sitTimer) clearTimeout(this.sitTimer);
           this.sitTimer = window.setTimeout(() => {
               this.sitTimer = null;
@@ -742,9 +750,16 @@ export class PetController {
                   this.trySetState('idle');
               }
           }, sitDuration);
-      } else if (type === "walk") {
-          const dir = Math.random() > 0.5 ? "left" : "right";
-          this.startWalk({ reason: 'autonomous', direction: dir });
+      } else if (action.id === "wave") {
+          this.playCustomAnimation("happy", "idle");
+      } else if (action.id === "hop") {
+          this.playCustomAnimation("landing", "idle");
+      } else if (action.id === "fail") {
+          this.playCustomAnimation("angry", "idle");
+      } else if (action.id === "run") {
+          this.playCustomAnimation("running", "idle");
+      } else if (action.id === "review") {
+          this.playCustomAnimation("shy", "idle");
       }
   }
 
@@ -781,7 +796,6 @@ export class PetController {
       this.behaviorScheduler.cancel("settings test walk");
       this.motionController.cancelActiveMotion("settings test walk");
 
-      // 强占当前反应动画
       this.player.stop();
       this.stateMachine.forceState("walk");
 
@@ -817,23 +831,25 @@ export class PetController {
       const res = resolveDirectionalAnimation(source, dir, (name) => this.player.hasAnimation(name));
       this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
       this.player.setFacing?.(res.facing);
-      
-      this.player.play(res.animation, {
-        loop: true,
-        speedMultiplier: this.settings.animationSpeedMultiplier,
-        onComplete: (nextState) => {
-          if (this.stateMachine.getState() === 'walk' && command.requestId === this.walkRequestId) {
-            this.trySetState(nextState as PetState);
-          }
-        }
+
+      const strideLengthPx = DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx; // 72px
+
+      this.player.beginDistanceDriven({
+        animation: res.animation,
+        frameCount: 8,
+        strideLengthPx
       });
-      this.currentPlayingAnimation = res.animation;
 
-      const duration = command.reason === 'test' 
-          ? 3000
-          : Math.random() * (config.walkDurationMaxMs - config.walkDurationMinMs) + config.walkDurationMinMs;
+      let duration = 3000;
+      if (command.reason === 'test') {
+        const actualSpeed = config.walkSpeed * this.settings.walkSpeedMultiplier;
+        const testCycles = 3;
+        const testDistance = strideLengthPx * testCycles; // 216px
+        duration = (testDistance / (actualSpeed || 48)) * 1000;
+      } else {
+        duration = Math.random() * (config.walkDurationMaxMs - config.walkDurationMinMs) + config.walkDurationMinMs;
+      }
 
-      // 提取快照诊断数据
       const characterId = this.settings.characterId;
       const sourceKind = source ? source.kind : "builtin";
       const isCodex = sourceKind === "installed";
@@ -907,6 +923,7 @@ export class PetController {
           this.settings,
           () => {
               if (command.requestId !== this.walkRequestId) return;
+              this.player.endDistanceDriven("idle");
               if (this.settings.edgeBehavior === "stop" || command.reason === 'test') {
                   if (this.stateMachine.getState() === 'walk') this.trySetState('idle');
               } else {
@@ -916,18 +933,16 @@ export class PetController {
           },
           () => {
               if (command.requestId !== this.walkRequestId) return;
+              this.player.endDistanceDriven("idle");
               if (this.stateMachine.getState() === 'walk') this.trySetState('idle');
+          },
+          (progress: MotionProgress) => {
+              if (command.requestId !== this.walkRequestId) return;
+              this.player.updateDistanceDriven(progress.totalLogicalDistance);
           }
       );
   }
 
-  /**
-   * 手动拖动时更新方向动画。
-   * 不调用 MotionController — Windows startDragging() 已经控制窗口位置。
-   * 注意：此处不调用 armDraggedIdleFallback()，
-   * 改为仅在 onMovementActivity（onMoved 窗口事件触发）时才重置计时器。
-   * 这样即使 Tauri 原生拖动期间 onMoved 未及时触发，方向动画也会持续播放。
-   */
   private updateManualDragDirection(direction: 'left' | 'right') {
     if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
 
@@ -935,32 +950,47 @@ export class PetController {
     const source = this.loader.getCharacterSource();
     const res = resolveDirectionalAnimation(source, direction, (name) => this.player.hasAnimation(name));
 
-    // 如果当前正在播放的已经是我们所期望的方向动画，且朝向相同，就不要重复 play()
-    if (this.currentPlayingAnimation === res.animation && this.facingController.getFacing() === res.facing) {
+    if (this.player.getCurrentAnimation() === res.animation && this.facingController.getFacing() === res.facing) {
       return;
     }
 
     this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
     this.player.setFacing?.(res.facing);
-    this.player.play(res.animation, {
-      loop: true,
-      speedMultiplier: this.settings.animationSpeedMultiplier
-    });
-    this.currentPlayingAnimation = res.animation;
 
-    // 方向切换时清除已有的回退计时器，但不重新 arm
-    // 只有 onMovementActivity（即窗口实际移动事件）才重新 arm 计时器
+    const strideLengthPx = DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx;
+    this.player.beginDistanceDriven({
+      animation: res.animation,
+      frameCount: 8,
+      strideLengthPx
+    });
+
     if (this.dragAnimTimer !== null) {
       clearTimeout(this.dragAnimTimer);
       this.dragAnimTimer = null;
     }
   }
 
-  /**
-   * 设置「停止移动后回退到 dragged 动画」的定时器。
-   * 仅在 onMovementActivity 回调中调用（即 Tauri onMoved 窗口事件触发时）。
-   * 不在方向切换时调用，避免 onMoved 稀疏时动画被提前中断。
-   */
+  private handleManualDragProgress(progress: DragProgress) {
+    if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
+
+    const config = this.getMotionConfig();
+    const source = this.loader.getCharacterSource();
+    const res = resolveDirectionalAnimation(source, progress.direction, (name) => this.player.hasAnimation(name));
+
+    if (this.player.getCurrentAnimation() !== res.animation) {
+      this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
+      this.player.setFacing?.(res.facing);
+      this.player.beginDistanceDriven({
+        animation: res.animation,
+        frameCount: 8,
+        strideLengthPx: DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx
+      });
+    }
+
+    this.player.updateDistanceDriven(progress.totalLogicalDistance);
+    this.armDraggedIdleFallback();
+  }
+
   private armDraggedIdleFallback() {
     if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
 
@@ -970,17 +1000,18 @@ export class PetController {
 
     this.dragAnimTimer = window.setTimeout(() => {
       if (this.stateMachine.getState() === 'dragged' && this.isDraggingWindow) {
+        this.player.endDistanceDriven();
         this.player.play('dragged', {
           loop: true,
           speedMultiplier: this.settings.animationSpeedMultiplier
         });
-        this.currentPlayingAnimation = 'dragged';
       }
       this.dragAnimTimer = null;
-    }, 600); // 600ms：给 onMoved 事件更充裕的时间重置计时器
+    }, 600);
   }
 
   private async handleDragRelease() {
+      this.player.endDistanceDriven();
       const floorInfo = await this.floorController.getCurrentFloorInfo();
       if (!floorInfo) {
           this.trySetState('idle');

@@ -1,4 +1,4 @@
-import { AnimationRenderer, AnimationPlaybackOptions } from './animation-renderer';
+import { AnimationRenderer, AnimationPlaybackOptions, DistanceDrivenPlayback } from './animation-renderer';
 import { CharacterLoader } from '../character-loader';
 import { PetState } from '../../shared/character-types';
 import { AnimationClock, resolveAnimationTiming } from './animation-clock';
@@ -10,6 +10,10 @@ export class FrameSequenceRenderer implements AnimationRenderer {
   private currentFrames: string[] = [];
   private badFrames = new Set<string>();
   private onCompleteCallback: ((nextState: PetState) => void) | null = null;
+
+  private currentAnimation: string | null = null;
+  private playbackMode: 'clock' | 'distance' | 'stopped' = 'stopped';
+  private distanceConfig: DistanceDrivenPlayback | null = null;
 
   constructor(loader: CharacterLoader, element: HTMLImageElement) {
     this.loader = loader;
@@ -55,6 +59,9 @@ export class FrameSequenceRenderer implements AnimationRenderer {
       return;
     }
 
+    this.clock.stop();
+    this.playbackMode = 'clock';
+    this.currentAnimation = name;
     this.onCompleteCallback = options?.onComplete || null;
     this.currentFrames = this.loader.getFrames(name as PetState) || [];
     
@@ -74,8 +81,46 @@ export class FrameSequenceRenderer implements AnimationRenderer {
     this.clock.play(name, timing, this.currentFrames.length, speed);
   }
 
+  beginDistanceDriven(config: DistanceDrivenPlayback): void {
+    this.clock.stop();
+    this.playbackMode = 'distance';
+    this.currentAnimation = config.animation;
+    this.distanceConfig = config;
+    this.currentFrames = this.loader.getFrames(config.animation as PetState) || [];
+  }
+
+  updateDistanceDriven(totalLogicalDistance: number): void {
+    if (this.playbackMode !== 'distance' || !this.distanceConfig || this.currentFrames.length === 0) {
+      return;
+    }
+    const { strideLengthPx } = this.distanceConfig;
+    const frameCount = this.currentFrames.length;
+    if (strideLengthPx <= 0 || frameCount === 0) return;
+
+    const normalizedPhase = (Math.abs(totalLogicalDistance) % strideLengthPx) / strideLengthPx;
+    const frameIndex = Math.min(frameCount - 1, Math.floor(normalizedPhase * frameCount));
+    this.renderFrame(frameIndex);
+  }
+
+  endDistanceDriven(fallback?: string): void {
+    this.playbackMode = 'stopped';
+    this.distanceConfig = null;
+    if (fallback && this.hasAnimation(fallback)) {
+      this.play(fallback);
+    }
+  }
+
   stop(): void {
     this.clock.stop();
+    this.playbackMode = 'stopped';
+  }
+
+  getCurrentAnimation(): string | null {
+    return this.currentAnimation;
+  }
+
+  getPlaybackMode(): 'clock' | 'distance' | 'stopped' {
+    return this.playbackMode;
   }
 
   updateSpeedMultiplier(speed: number): void {
@@ -84,6 +129,8 @@ export class FrameSequenceRenderer implements AnimationRenderer {
 
   destroy(): void {
     this.clock.destroy();
+    this.playbackMode = 'stopped';
+    this.currentAnimation = null;
   }
 
   private renderFrame(frameIndex: number) {

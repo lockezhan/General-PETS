@@ -1137,6 +1137,107 @@ fn export_codex_direction_probe(app: tauri::AppHandle, character_id: String) -> 
     }))
 }
 
+#[tauri::command]
+fn export_codex_animation_contact_sheet(
+    app: tauri::AppHandle,
+    character_id: String,
+    animation_name: String
+) -> Result<serde_json::Value, String> {
+    let app_local_data = app.path().app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve AppLocalData: {}", e))?;
+    let characters_dir = app_local_data.join("characters");
+    let index_path = characters_dir.join("installed-index.json");
+    
+    let index = load_installed_index(&index_path)?;
+    let char_info = index.characters.iter().find(|c| c.id == character_id)
+        .ok_or_else(|| format!("Character '{}' not found", character_id))?;
+        
+    let char_dir = characters_dir.join(&char_info.directory);
+    
+    let pet_json_path = char_dir.join("pet.json");
+    let mut spritesheet_rel = "spritesheet.webp".to_string();
+    if pet_json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pet_json_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(path_str) = json.get("spritesheetPath").or_else(|| json.get("spritesheet")).and_then(|v| v.as_str()) {
+                    spritesheet_rel = path_str.to_string();
+                }
+            }
+        }
+    }
+    
+    let spritesheet_path = char_dir.join(&spritesheet_rel);
+    if !spritesheet_path.exists() {
+        return Err(format!("Spritesheet path does not exist: {:?}", spritesheet_path));
+    }
+    
+    let img = image::open(&spritesheet_path)
+        .map_err(|e| format!("Failed to open spritesheet image: {}", e))?;
+
+    let (row, frame_count) = match animation_name.as_str() {
+        "running-right" => (1, 8),
+        "running-left" => (2, 8),
+        "running" => (7, 6),
+        _ => return Err(format!("Unsupported animation name for contact sheet: {}", animation_name)),
+    };
+
+    let frame_width: u32 = 192;
+    let frame_height: u32 = 208;
+    let header_height: u32 = 24;
+
+    let canvas_width = frame_width * frame_count;
+    let canvas_height = frame_height + header_height;
+
+    let mut contact_sheet = image::RgbaImage::new(canvas_width, canvas_height);
+
+    // Fill background with light gray for header & boundary check
+    for x in 0..canvas_width {
+        for y in 0..canvas_height {
+            contact_sheet.put_pixel(x, y, image::Rgba([240, 240, 245, 255]));
+        }
+    }
+
+    for col in 0..frame_count {
+        let source_x = col * frame_width;
+        let source_y = row * frame_height;
+
+        let frame = image::imageops::crop_imm(&img, source_x, source_y, frame_width, frame_height).to_image();
+
+        let dest_x = col * frame_width;
+        let dest_y = header_height;
+
+        image::imageops::overlay(&mut contact_sheet, &frame, dest_x as i64, dest_y as i64);
+
+        // Draw vertical separating grid lines
+        if col > 0 {
+            for y in 0..canvas_height {
+                contact_sheet.put_pixel(dest_x, y, image::Rgba([200, 50, 50, 255]));
+            }
+        }
+    }
+
+    let cache_dir = app.path().app_cache_dir()
+        .map_err(|e| format!("Failed to resolve AppCache: {}", e))?;
+    
+    let out_filename = format!("{}-contact-sheet.png", animation_name);
+    let out_path = cache_dir.join(&out_filename);
+
+    contact_sheet.save(&out_path)
+        .map_err(|e| format!("Failed to save contact sheet: {}", e))?;
+
+    println!("[codex-probe] Exported contact sheet '{}' for character '{}' -> {:?}", animation_name, character_id, out_path);
+
+    Ok(serde_json::json!({
+        "characterId": character_id,
+        "animationName": animation_name,
+        "contactSheetPath": out_path.to_string_lossy().to_string(),
+        "row": row,
+        "frameCount": frame_count,
+        "frameWidth": frame_width,
+        "frameHeight": frame_height
+    }))
+}
+
 fn main() {
     println!(
         "[startup] pid={} exe={:?}",
@@ -1169,7 +1270,8 @@ fn main() {
             repair_missing_character_previews,
             load_installed_character_configs,
             repair_installed_codex_adapters,
-            export_codex_direction_probe
+            export_codex_direction_probe,
+            export_codex_animation_contact_sheet
         ])
         .setup(|app| {
             create_main_tray(app)?;

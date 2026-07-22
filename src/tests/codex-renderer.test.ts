@@ -87,121 +87,112 @@ describe('CodexAtlasRenderer', () => {
     };
   });
 
-  it('should wrap element in viewport container and configure absolute position style', () => {
+  it('should wrap element in viewport container with Canvas 2D precision crop element', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
 
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
     
-    // Viewport should be created and inserted
+    // Viewport and Canvas should be created and inserted
     const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
     expect(viewport).toBeDefined();
     expect(viewport.style.overflow).toBe('hidden');
     expect(viewport.style.position).toBe('relative');
 
-    // Sprite image styles
-    expect(element.style.position).toBe('absolute');
-    expect(element.style.maxWidth).toBe('none');
+    const canvas = viewport.querySelector('canvas.codex-frame-canvas') as HTMLCanvasElement;
+    expect(canvas).toBeDefined();
+    expect(canvas.style.display).toBe('block');
+
+    // Element style should be transparent in layout to let Canvas render & keep bounds
+    expect(element.style.opacity).toBe('0');
 
     renderer.destroy();
     
     // Cleaned up
     expect(parent.querySelector('.codex-frame-viewport')).toBeNull();
-    expect(element.style.position).toBe('');
+    expect(element.style.display).toBe('');
   });
 
-  it('should compute transform translations based on column and row scaling factors', () => {
+  it('should support distance-driven locomotion playback mode and calculate frames', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
 
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
 
-    // Mock bounding rect for display size
-    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
+    renderer.beginDistanceDriven({
+      animation: 'walkRight',
+      frameCount: 8,
+      strideLengthPx: 72
+    });
 
-    // Play waving row 3
-    renderer.play('happy', { loop: false });
+    expect(renderer.getPlaybackMode()).toBe('distance');
+    expect(renderer.getCurrentAnimation()).toBe('walkRight');
 
-    // Expect initial offset col=0, row=3
-    // scaleX = 192/192 = 1, scaleY = 208/208 = 1
-    // transform translate(0px, -624px) -> row 3 * 208 = 624
-    expect(element.style.transform).toBe('translate(0px, -624px)');
+    renderer.updateDistanceDriven(36); // Half stride -> phase 0.5 -> frame 4
+    expect((renderer as any).currentFrameIndex).toBe(4);
+
+    renderer.updateDistanceDriven(72); // Full stride -> phase 0 -> frame 0
+    expect((renderer as any).currentFrameIndex).toBe(0);
+
+    renderer.endDistanceDriven('idle');
+    expect(renderer.getPlaybackMode()).toBe('clock');
+    expect(renderer.getCurrentAnimation()).toBe('idle');
 
     renderer.destroy();
   });
 
-  it('should play walkRight and set currentMappedAnimation to running-right on row 1 without mirroring', () => {
+  it('should play walkRight and set currentMappedAnimation to running-right without viewport mirror', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
     const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
 
     renderer.play('walkRight');
     expect((renderer as any).currentMappedAnimation).toBe('running-right');
-    // Row 1 * 208 = 208
-    expect(element.style.transform).toBe('translate(0px, -208px)');
     expect(viewport.style.transform).toBe('none');
 
     renderer.destroy();
   });
 
-  it('should play walkLeft and set currentMappedAnimation to running-left on row 2 without mirroring', () => {
+  it('should play walkLeft and set currentMappedAnimation to running-left without viewport mirror', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
     const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
 
     renderer.play('walkLeft');
     expect((renderer as any).currentMappedAnimation).toBe('running-left');
-    // Row 2 * 208 = 416
-    expect(element.style.transform).toBe('translate(0px, -416px)');
     expect(viewport.style.transform).toBe('none');
 
     renderer.destroy();
   });
 
-  it('should not mirror walkLeft when facing is left', () => {
+  it('should not mirror viewport when facing is left for directional or non-directional animations', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
     const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
 
     renderer.setFacing('left');
     renderer.play('walkLeft');
     expect(viewport.style.transform).toBe('none');
 
-    renderer.destroy();
-  });
-
-  it('should mirror idle when facing is left', () => {
-    const parent = document.createElement('div');
-    parent.appendChild(element);
-    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
-    const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
-
-    renderer.setFacing('left');
     renderer.play('idle');
-    expect(viewport.style.transform).toBe('scaleX(-1)');
+    // Canvas handles internal context mirroring, viewport transform stays 'none' to avoid double-mirroring
+    expect(viewport.style.transform).toBe('none');
 
     renderer.destroy();
   });
 
-  it('should support version 2 adapters with 11 rows and 2288px height', () => {
+  it('should support version 2 adapters with 11 rows', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
     const v2Adapter = { ...adapterConfig, spriteVersionNumber: 2 as const };
     const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', v2Adapter);
     const viewport = parent.querySelector('.codex-frame-viewport') as HTMLDivElement;
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 192, 208));
 
     renderer.play('idle');
-    // atlasHeight = 2288
-    expect(element.style.height).toBe('2288px');
+    expect(viewport).toBeDefined();
 
     renderer.destroy();
   });

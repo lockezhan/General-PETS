@@ -2,12 +2,20 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { HorizontalDirection } from './render/directional-animation-resolver';
 
+export interface DragProgress {
+  direction: HorizontalDirection;
+  deltaLogicalX: number;
+  totalLogicalDistance: number;
+}
+
 export interface DragDirectionState {
   active: boolean;
   previousX: number | null;
   currentDirection: HorizontalDirection | null;
   stableSamples: number;
   lastChangedAt: number;
+  totalLogicalDistance: number;
+  scaleFactor: number;
 }
 
 export class DragDirectionTracker {
@@ -16,19 +24,21 @@ export class DragDirectionTracker {
     previousX: null,
     currentDirection: null,
     stableSamples: 0,
-    lastChangedAt: 0
+    lastChangedAt: 0,
+    totalLogicalDistance: 0,
+    scaleFactor: 1.0,
   };
 
   private unlistenFn: (() => void) | null = null;
   private onDirectionChange: (direction: HorizontalDirection) => void;
-  private onMovementActivity: (direction: HorizontalDirection) => void;
+  private onMovementActivity: (progress: DragProgress) => void;
 
   private readonly DRAG_DIRECTION_THRESHOLD_PHYSICAL_PX = 3;
   private readonly DRAG_DIRECTION_DEBOUNCE_MS = 60;
 
   constructor(
     onDirectionChange: (direction: HorizontalDirection) => void,
-    onMovementActivity: (direction: HorizontalDirection) => void = () => {}
+    onMovementActivity: (progress: DragProgress) => void = () => {}
   ) {
     this.onDirectionChange = onDirectionChange;
     this.onMovementActivity = onMovementActivity;
@@ -42,12 +52,14 @@ export class DragDirectionTracker {
     });
   }
 
-  public startDrag(initialDirection: HorizontalDirection | null) {
+  public startDrag(initialDirection: HorizontalDirection | null, scaleFactor: number = 1.0) {
     this.state.active = true;
     this.state.previousX = null;
     this.state.currentDirection = initialDirection;
     this.state.stableSamples = 0;
     this.state.lastChangedAt = performance.now();
+    this.state.totalLogicalDistance = 0;
+    this.state.scaleFactor = scaleFactor || 1.0;
 
     if (initialDirection) {
       console.log(`[drag-direction] started initial=${initialDirection}`);
@@ -75,25 +87,29 @@ export class DragDirectionTracker {
       return;
     }
 
-    const deltaX = position.x - this.state.previousX;
+    const deltaPhysicalX = position.x - this.state.previousX;
     this.state.previousX = position.x;
 
-    if (Math.abs(deltaX) < this.DRAG_DIRECTION_THRESHOLD_PHYSICAL_PX) {
+    if (Math.abs(deltaPhysicalX) < this.DRAG_DIRECTION_THRESHOLD_PHYSICAL_PX) {
       return;
     }
 
-    const candidateDirection: HorizontalDirection = deltaX > 0 ? "right" : "left";
+    const deltaLogicalX = deltaPhysicalX / this.state.scaleFactor;
+    this.state.totalLogicalDistance += Math.abs(deltaLogicalX);
 
-    // 每次有效移动都通知活动回调（用于重置停止计时器）
-    this.onMovementActivity(candidateDirection);
+    const candidateDirection: HorizontalDirection = deltaPhysicalX > 0 ? "right" : "left";
+
+    this.onMovementActivity({
+      direction: candidateDirection,
+      deltaLogicalX,
+      totalLogicalDistance: this.state.totalLogicalDistance,
+    });
 
     const now = performance.now();
 
     if (this.state.currentDirection === candidateDirection) {
-      // 同方向：重置防抖计数
       this.state.stableSamples = 0;
     } else {
-      // 候选方向改变：防抖后才切换
       this.state.stableSamples++;
       const timeSinceChange = now - this.state.lastChangedAt;
 
@@ -117,6 +133,7 @@ export class DragDirectionTracker {
     this.state.previousX = null;
     this.state.currentDirection = null;
     this.state.stableSamples = 0;
+    this.state.totalLogicalDistance = 0;
   }
 
   public destroy() {

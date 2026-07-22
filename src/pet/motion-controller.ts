@@ -8,6 +8,15 @@ const DEFAULT_GRAVITY = 1800; // logical px / s^2
 const MAX_FALL_SPEED = 1400;  // logical px / s
 const EDGE_PADDING = 8; // logical px
 
+export interface MotionProgress {
+  type: "walk" | "fall";
+  deltaLogicalX: number;
+  deltaLogicalY: number;
+  totalLogicalDistance: number;
+  positionX: number;
+  positionY: number;
+}
+
 export interface ActiveMotion {
   type: "walk" | "fall";
   cancelled: boolean;
@@ -22,14 +31,16 @@ export interface ActiveMotion {
   velocityY: number;
   targetDurationMs?: number;
   elapsedMs: number;
+  totalLogicalDistance: number;
   onEdge?: () => void;
   onComplete?: () => void;
+  onProgress?: (progress: MotionProgress) => void;
 }
 
 export class MotionController {
   private activeMotion: ActiveMotion | null = null;
-  private motionInFlight: boolean = false;
   private animFrameId: number | null = null;
+  private isSettingPosition: boolean = false;
 
   public cancelActiveMotion(reason: string) {
     if (this.activeMotion) {
@@ -50,7 +61,8 @@ export class MotionController {
     floorInfo: FloorInfo, 
     settings: PetSettings,
     onEdge: () => void,
-    onComplete: () => void
+    onComplete: () => void,
+    onProgress?: (progress: MotionProgress) => void
   ) {
     this.cancelActiveMotion("new walk started");
     
@@ -77,8 +89,10 @@ export class MotionController {
         velocityY: 0,
         targetDurationMs: durationMs,
         elapsedMs: 0,
+        totalLogicalDistance: 0,
         onEdge,
-        onComplete
+        onComplete,
+        onProgress
       };
       
       this.animFrameId = requestAnimationFrame((now) => this.tickMotion(now, floorInfo));
@@ -119,6 +133,7 @@ export class MotionController {
         velocityX: 0,
         velocityY: 0,
         elapsedMs: 0,
+        totalLogicalDistance: 0,
         onComplete
       };
       
@@ -138,14 +153,9 @@ export class MotionController {
     }
   }
 
-  private async tickMotion(now: number, floorInfo: FloorInfo) {
+  private tickMotion(now: number, floorInfo: FloorInfo) {
     const motion = this.activeMotion;
     if (!motion || motion.cancelled) return;
-
-    if (this.motionInFlight) {
-      this.animFrameId = requestAnimationFrame((n) => this.tickMotion(n, floorInfo));
-      return;
-    }
 
     let deltaSeconds = (now - motion.lastTimestamp) / 1000;
     if (deltaSeconds > MAX_FRAME_DELTA_SECONDS) {
@@ -157,69 +167,80 @@ export class MotionController {
 
     let nextPhysicalX = motion.currentPhysicalX;
     let nextPhysicalY = motion.currentPhysicalY;
+    let deltaLogicalX = 0;
+    let deltaLogicalY = 0;
     let hitEdge = false;
     let hitFloor = false;
 
-    this.motionInFlight = true;
-    try {
-      if (motion.type === "walk") {
-        // Horizontal logic
-        const logicalDeltaX = motion.velocityX * deltaSeconds;
-        const physicalDeltaX = logicalDeltaX * floorInfo.scaleFactor;
-        
-        motion.fractionalX += physicalDeltaX;
-        const pixelsToMoveX = Math.trunc(motion.fractionalX);
-        motion.fractionalX -= pixelsToMoveX;
-        
-        let targetX = motion.currentPhysicalX + pixelsToMoveX;
-        
-        // Edge collision detection (using physical pixels)
-        const minX = floorInfo.workAreaLeft + (EDGE_PADDING * floorInfo.scaleFactor);
-        const maxX = floorInfo.workAreaRight - motion.physicalWidth - (EDGE_PADDING * floorInfo.scaleFactor);
-        
-        if (targetX < minX) {
-          targetX = minX;
-          hitEdge = true;
-        } else if (targetX > maxX) {
-          targetX = maxX;
-          hitEdge = true;
-        }
-        
-        nextPhysicalX = targetX;
-      } 
-      else if (motion.type === "fall") {
-        // Vertical logic
-        motion.velocityY = Math.min(motion.velocityY + DEFAULT_GRAVITY * deltaSeconds, MAX_FALL_SPEED);
-        
-        const logicalDeltaY = motion.velocityY * deltaSeconds;
-        const physicalDeltaY = logicalDeltaY * floorInfo.scaleFactor;
-        
-        motion.fractionalY += physicalDeltaY;
-        const pixelsToMoveY = Math.trunc(motion.fractionalY);
-        motion.fractionalY -= pixelsToMoveY;
-        
-        let targetY = motion.currentPhysicalY + pixelsToMoveY;
-        
-        if (targetY >= floorInfo.floorWindowY) {
-          targetY = floorInfo.floorWindowY;
-          hitFloor = true;
-        }
-        
-        nextPhysicalY = targetY;
+    if (motion.type === "walk") {
+      const targetLogicalDeltaX = motion.velocityX * deltaSeconds;
+      const physicalDeltaX = targetLogicalDeltaX * floorInfo.scaleFactor;
+      
+      motion.fractionalX += physicalDeltaX;
+      const pixelsToMoveX = Math.trunc(motion.fractionalX);
+      motion.fractionalX -= pixelsToMoveX;
+      
+      let targetX = motion.currentPhysicalX + pixelsToMoveX;
+      
+      const minX = floorInfo.workAreaLeft + (EDGE_PADDING * floorInfo.scaleFactor);
+      const maxX = floorInfo.workAreaRight - motion.physicalWidth - (EDGE_PADDING * floorInfo.scaleFactor);
+      
+      if (targetX < minX) {
+        targetX = minX;
+        hitEdge = true;
+      } else if (targetX > maxX) {
+        targetX = maxX;
+        hitEdge = true;
       }
+      
+      nextPhysicalX = targetX;
+      deltaLogicalX = (nextPhysicalX - motion.currentPhysicalX) / floorInfo.scaleFactor;
+    } 
+    else if (motion.type === "fall") {
+      motion.velocityY = Math.min(motion.velocityY + DEFAULT_GRAVITY * deltaSeconds, MAX_FALL_SPEED);
+      
+      const targetLogicalDeltaY = motion.velocityY * deltaSeconds;
+      const physicalDeltaY = targetLogicalDeltaY * floorInfo.scaleFactor;
+      
+      motion.fractionalY += physicalDeltaY;
+      const pixelsToMoveY = Math.trunc(motion.fractionalY);
+      motion.fractionalY -= pixelsToMoveY;
+      
+      let targetY = motion.currentPhysicalY + pixelsToMoveY;
+      
+      if (targetY >= floorInfo.floorWindowY) {
+        targetY = floorInfo.floorWindowY;
+        hitFloor = true;
+      }
+      
+      nextPhysicalY = targetY;
+      deltaLogicalY = (nextPhysicalY - motion.currentPhysicalY) / floorInfo.scaleFactor;
+    }
 
-      if (!motion.cancelled) {
-        if (motion.currentPhysicalX !== nextPhysicalX || motion.currentPhysicalY !== nextPhysicalY) {
-            const appWindow = getCurrentWindow();
-            await appWindow.setPosition(new PhysicalPosition(nextPhysicalX, nextPhysicalY));
-            motion.currentPhysicalX = nextPhysicalX;
-            motion.currentPhysicalY = nextPhysicalY;
-        }
+    if (motion.currentPhysicalX !== nextPhysicalX || motion.currentPhysicalY !== nextPhysicalY) {
+      motion.currentPhysicalX = nextPhysicalX;
+      motion.currentPhysicalY = nextPhysicalY;
+      
+      motion.totalLogicalDistance += Math.abs(deltaLogicalX);
+
+      // 60FPS 流畅同步触发动画更新
+      motion.onProgress?.({
+        type: motion.type,
+        deltaLogicalX,
+        deltaLogicalY,
+        totalLogicalDistance: motion.totalLogicalDistance,
+        positionX: nextPhysicalX,
+        positionY: nextPhysicalY,
+      });
+
+      // 异步不阻塞 rAF 循环分发 OS 窗口物理位移
+      if (!this.isSettingPosition) {
+        this.isSettingPosition = true;
+        const appWindow = getCurrentWindow();
+        appWindow.setPosition(new PhysicalPosition(nextPhysicalX, nextPhysicalY))
+          .catch((e) => console.error("[motion] Error setPosition:", e))
+          .finally(() => { this.isSettingPosition = false; });
       }
-    } catch (e) {
-      console.error("[motion] Error in setPosition:", e);
-    } finally {
-      this.motionInFlight = false;
     }
 
     if (motion.cancelled) return;
