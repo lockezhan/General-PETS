@@ -108,7 +108,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.canvas.style.width = `${this.displayWidth}px`;
     this.canvas.style.height = `${this.displayHeight}px`;
 
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
 
     if (parent) {
       parent.insertBefore(this.viewport, this.element);

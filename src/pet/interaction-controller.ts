@@ -8,6 +8,8 @@ import { PetSettings } from '../shared/pet-settings';
 import { DialogueDirector } from './natural/dialogue-director';
 import { ReactionSession } from './natural/reaction-session';
 import { resolveInteractionAnimation } from './interaction/resolve-interaction-animation';
+import { HitAreaShape } from './interaction/interaction-types';
+import { isCanvasPointOpaque } from './interaction/visual-alpha-hit-test';
 
 export interface InteractionControllerCallbacks {
   playAnimation: (animName: string, fallback?: string, context?: InteractionExecutionContext) => boolean | void;
@@ -100,7 +102,7 @@ export class InteractionController {
       findArea: (clientX, clientY) => {
         const spriteRect = this.getVisualInteractionRect();
         const facing = this.callbacks.getFacing();
-        const area = this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
+        const area = this.findHitAreaAtPoint(clientX, clientY, spriteRect, facing);
         if (import.meta.env.DEV) {
           console.info(
             `[interaction-trace]\n` +
@@ -228,7 +230,8 @@ export class InteractionController {
 
     const spriteRect = this.getVisualInteractionRect();
     const facing = this.callbacks.getFacing();
-    const area = this.hitAreaEngine.findHitArea(e.clientX, e.clientY, spriteRect, facing);
+    const area = this.findHitAreaAtPoint(e.clientX, e.clientY, spriteRect, facing);
+    this.element.classList.toggle('is-interactive-hover', area !== null);
 
     if (this.settings.hitAreaDebugEnabled) {
       this.debugOverlay.updatePointerInfo(e.clientX, e.clientY, area ? area.id : null);
@@ -302,6 +305,21 @@ export class InteractionController {
     }
 
     return this.spriteImg.getBoundingClientRect();
+  }
+
+  private findHitAreaAtPoint(
+    clientX: number,
+    clientY: number,
+    spriteRect: DOMRect,
+    facing: "left" | "right",
+  ): HitAreaShape | null {
+    const codexCanvas = this.element.querySelector<HTMLCanvasElement>(
+      'canvas.codex-frame-canvas'
+    );
+    if (codexCanvas && !isCanvasPointOpaque(codexCanvas, clientX, clientY, spriteRect)) {
+      return null;
+    }
+    return this.hitAreaEngine.findHitArea(clientX, clientY, spriteRect, facing);
   }
 
   private executeFallback(event: InteractionEventType, areaId: string | null) {
@@ -388,5 +406,6 @@ export class InteractionController {
     this.recognizer.unbindEvents();
     this.element.removeEventListener('pointermove', this.handlePointerMoveHover);
     this.debugOverlay.setEnabled(false);
+    this.element.classList.remove('is-interactive-hover');
   }
 }
