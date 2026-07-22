@@ -49,6 +49,7 @@ export class ManualWindowDragController {
   private lastSampleY = 0;
   private lastSampleAt = 0;
   private smoothedVelocityX = 0;
+  private smoothedVelocityY = 0;
   private direction: 'left' | 'right' | null = null;
   private pendingDirection: 'left' | 'right' | null = null;
   private pendingDirectionSince = 0;
@@ -78,6 +79,8 @@ export class ManualWindowDragController {
     this.direction = null;
     this.pendingDirection = null;
     this.pendingDirectionSince = 0;
+    this.smoothedVelocityX = 0;
+    this.smoothedVelocityY = 0;
 
     const appWindow = getCurrentWindow();
     const [position, scaleFactor] = await Promise.all([
@@ -120,6 +123,7 @@ export class ManualWindowDragController {
     const velocityY = deltaLogicalY / elapsedSeconds;
 
     this.smoothedVelocityX = this.smoothedVelocityX * 0.7 + velocityX * 0.3;
+    this.smoothedVelocityY = this.smoothedVelocityY * 0.75 + velocityY * 0.25;
     this.totalLogicalX = (pointerScreenX - this.startPointerX) / this.scaleFactor;
     this.totalLogicalY = (pointerScreenY - this.startPointerY) / this.scaleFactor;
     this.maximumUpwardLiftLogical = Math.max(
@@ -151,7 +155,7 @@ export class ManualWindowDragController {
       totalLogicalY: this.totalLogicalY,
       totalHorizontalDistance: Math.abs(this.totalLogicalX),
       velocityX: this.smoothedVelocityX,
-      velocityY,
+      velocityY: this.smoothedVelocityY,
       direction: this.direction,
       positionX: this.desiredWindowX,
       positionY: this.desiredWindowY

@@ -33,6 +33,7 @@ import { ManualWindowDragController, ManualDragProgress, ManualDragSummary } fro
 import { getAmbientDialogueProbability, getAmbientPresentation, getInteractionPresentation, randomDuration } from './natural/action-presentation-profiles';
 import type { LookDirectionName } from './codex/codex-types';
 import { CODEX_ATLAS_CONTRACTS } from './codex/codex-atlas-contract';
+import { resolveVerticalDragAnimation } from './drag-animation-policy';
 
 export const GAIT_TEST_DISTANCE_LOGICAL_PX = 288;
 export const GAIT_CALIBRATION_STRIDES = [48, 60, 72, 84, 96, 120] as const;
@@ -1129,7 +1130,10 @@ export class PetController {
     if (predominantlyVertical) {
       this.dragSlowSince = null;
       this.clearDragWaitingTimer();
-      animation = Math.abs(progress.velocityY) >= 60 ? 'jumping' : 'waiting';
+      animation = resolveVerticalDragAnimation(
+        this.dragCurrentAnimation,
+        progress.velocityY
+      );
       this.visualCoordinator.setMotionState(
         animation === 'jumping' ? 'drag-vertical' : 'drag-static'
       );

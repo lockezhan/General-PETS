@@ -56,4 +56,23 @@ describe('ManualWindowDragController', () => {
     expect(summary.totalLogicalY).toBe(-20);
     expect(summary.predominantlyVertical).toBe(true);
   });
+
+  it('smooths intermittent slow vertical samples instead of reporting threshold spikes', async () => {
+    const progress: ManualDragProgress[] = [];
+    const controller = new ManualWindowDragController((value) => progress.push(value));
+
+    await controller.begin(50, 100);
+    vi.advanceTimersByTime(16);
+    controller.update(50, 99);
+    vi.advanceTimersByTime(16);
+    controller.update(50, 99);
+    vi.advanceTimersByTime(16);
+    controller.update(50, 98);
+
+    expect(progress.map((sample) => Math.abs(sample.velocityY))).toEqual([
+      7.8125,
+      5.859375,
+      12.20703125
+    ]);
+  });
 });
