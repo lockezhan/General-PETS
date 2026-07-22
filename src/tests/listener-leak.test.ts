@@ -23,6 +23,7 @@ describe('InteractionController Event Listeners', () => {
       getFacing: vi.fn().mockReturnValue('right'),
       hasAnimation: vi.fn().mockReturnValue(true),
       onDragStart: vi.fn(),
+      onDragMove: vi.fn(),
       onDragEnd: vi.fn(),
       onPressVisualStart: vi.fn(),
       onPressVisualCancel: vi.fn()

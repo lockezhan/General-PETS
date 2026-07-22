@@ -191,6 +191,22 @@ describe('CodexAtlasRenderer', () => {
     renderer.destroy();
   });
 
+  it('should play standard running names directly on their Codex rows', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+
+    renderer.play('running-left');
+    expect((renderer as any).currentMappedAnimation).toBe('running-left');
+    expect((renderer as any).currentConfig.row).toBe(2);
+
+    renderer.play('running-right');
+    expect((renderer as any).currentMappedAnimation).toBe('running-right');
+    expect((renderer as any).currentConfig.row).toBe(1);
+
+    renderer.destroy();
+  });
+
   it('should not mirror viewport when facing is left for directional or non-directional animations', () => {
     const parent = document.createElement('div');
     parent.appendChild(element);
@@ -205,6 +221,23 @@ describe('CodexAtlasRenderer', () => {
     // Canvas handles internal context mirroring, viewport transform stays 'none' to avoid double-mirroring
     expect(viewport.style.transform).toBe('none');
 
+    renderer.destroy();
+  });
+
+  it('should render the first frame immediately when distance playback begins', () => {
+    const parent = document.createElement('div');
+    parent.appendChild(element);
+    const renderer = new CodexAtlasRenderer(element, 'asset://localhost/spritesheet.webp', adapterConfig);
+    const renderSpy = vi.spyOn(renderer, 'renderFrame');
+
+    renderer.beginDistanceDriven({
+      animation: 'walkLeft',
+      frameCount: 8,
+      strideLengthPx: 120
+    });
+
+    expect(renderSpy).toHaveBeenCalled();
+    expect((renderer as any).currentFrameIndex).toBe(0);
     renderer.destroy();
   });
 

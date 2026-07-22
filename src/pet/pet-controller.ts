@@ -1,5 +1,4 @@
 import { CharacterLoader } from './character-loader';
-import { DragDirectionTracker, DragProgress } from './drag-direction-tracker';
 import { resolveDirectionalAnimation, HorizontalDirection } from './render/directional-animation-resolver';
 import { AnimationRenderer } from './render/animation-renderer';
 import { FrameSequenceRenderer } from './render/frame-sequence-renderer';
@@ -27,10 +26,10 @@ import { getDialogueDurationMs } from './natural/dialogue-director';
 import { ActionDirector } from './natural/action-director';
 import { BehaviorPlanner, PlannedBehavior } from './natural/behavior-planner';
 import { PetVisualCoordinator } from './natural/visual-coordinator';
-import { DragPoseController } from './natural/drag-pose-controller';
 import { resolveInteractionAnimation } from './interaction/resolve-interaction-animation';
 import { calculatePetVisualLayout } from './visual-layout';
 import { migratePetSettings } from '../shared/settings-migration';
+import { ManualWindowDragController, ManualDragProgress, ManualDragSummary } from './manual-window-drag-controller';
 
 export interface WalkDebugSnapshot {
   requestId: number;
@@ -77,20 +76,23 @@ export class PetController {
   private visualCoordinator: PetVisualCoordinator;
   private actionDirector!: ActionDirector;
   private behaviorPlanner: BehaviorPlanner;
-  private dragPoseController: DragPoseController;
 
   private bubbleTimer: number | null = null;
   private sleepTimer: number | null = null;
   private sitTimer: number | null = null;
   
-  private dragDirectionTracker!: DragDirectionTracker;
+  private manualDragController: ManualWindowDragController;
   private settings: PetSettings = { ...DEFAULT_SETTINGS };
   private dialogues: any = null;
   private interactionManifest: InteractionManifest | null = null;
 
   private isDraggingWindow = false;
-  private dragAnimTimer: number | null = null;
   private walkRequestId = 0;
+  private activeDragSessionId = 0;
+  private completedDragSessionId = 0;
+  private dragSlowSince: number | null = null;
+  private dragCurrentAnimation: string | null = null;
+  private dragWaitingTimer: number | null = null;
 
   constructor() {
     this.loader = new CharacterLoader('default');
@@ -130,8 +132,6 @@ export class PetController {
     }
 
     this.visualCoordinator = new PetVisualCoordinator();
-    this.dragPoseController = new DragPoseController();
-
     this.behaviorPlanner = new BehaviorPlanner((plan) => {
       this.handleBehaviorPlan(plan);
     });
@@ -143,13 +143,8 @@ export class PetController {
     this.floorController = new FloorController();
     this.motionController = new MotionController();
 
-    this.dragDirectionTracker = new DragDirectionTracker(
-      (dir) => {
-        this.updateManualDragDirection(dir);
-      },
-      (progress) => {
-        this.handleManualDragProgress(progress);
-      }
+    this.manualDragController = new ManualWindowDragController(
+      (progress) => this.handleManualDragProgress(progress)
     );
 
     const interactionCallbacks: InteractionControllerCallbacks = {
@@ -181,11 +176,14 @@ export class PetController {
       hasAnimation: (name) => {
         return this.player?.hasAnimation(name) ?? false;
       },
-      onDragStart: (initialDirection) => {
-        this.handleManualDragStart(initialDirection);
+      onDragStart: (initialDirection, pointerScreenX, pointerScreenY) => {
+        this.handleManualDragStart(initialDirection, pointerScreenX, pointerScreenY);
       },
-      onDragEnd: () => {
-        this.handleDragRelease();
+      onDragMove: (pointerScreenX, pointerScreenY) => {
+        this.manualDragController.update(pointerScreenX, pointerScreenY);
+      },
+      onDragEnd: (reason) => {
+        void this.finishManualDrag(this.activeDragSessionId, reason ?? 'pointerup');
       },
       onPressVisualStart: () => {
         this.petRoot.classList.add('is-pressed');
@@ -226,7 +224,7 @@ export class PetController {
     listen(EVENT_RESET_POSITION, () => {
       console.log("[pet-controller] received EVENT_RESET_POSITION");
       this.floorController.invalidateCache();
-      this.movePetToDefaultPosition();
+      void this.movePetToDefaultPosition();
     });
 
     listen(EVENT_SETTINGS_CHANGED, async (e: any) => {
@@ -555,14 +553,32 @@ export class PetController {
     this.cancelActiveLocomotion("user animation request");
     this.visualCoordinator.setReactionState(animName as any, "user");
 
+    const isLongPressReview = animName === 'review';
     this.actionDirector.requestAction({
-      id: `custom-${animName}-${Date.now()}`,
+      id: isLongPressReview
+        ? `longpress-review-${Date.now()}`
+        : `custom-${animName}-${Date.now()}`,
       animation: animName,
       priority: 'interaction',
       source: 'user',
-      fallback,
-      interruptPolicy: 'extend-same'
+      fallback: isLongPressReview ? 'idle' : fallback,
+      interruptPolicy: isLongPressReview ? 'immediate' : 'extend-same',
+      loop: isLongPressReview ? false : undefined,
+      holdAfterMs: isLongPressReview ? 300 : undefined
     });
+
+    if (isLongPressReview && import.meta.env.DEV) {
+      console.info(
+        `[longpress]\n` +
+        `threshold=650\n` +
+        `event-committed=true\n` +
+        `requested=review\n` +
+        `mapped=review\n` +
+        `row=8\n` +
+        `loop=false\n` +
+        `fallback=idle`
+      );
+    }
   }
 
   private playStateAnimation(state: PetState) {
@@ -657,27 +673,123 @@ export class PetController {
     );
   }
 
-  private handleManualDragStart(initialDirection: "left" | "right" | null) {
+  private handleManualDragStart(
+    initialDirection: "left" | "right" | null,
+    pointerScreenX: number,
+    pointerScreenY: number
+  ) {
+    const sessionId = ++this.activeDragSessionId;
     this.isDraggingWindow = true;
     this.petRoot.classList.remove('is-pressed');
+    this.floorController.invalidateCache();
     this.cancelActiveLocomotion("manual drag start");
+    this.actionDirector.clearCurrentAction("manual drag start");
+    this.behaviorPlanner.cancel("manual drag start");
     this.behaviorPlanner.recordUserInteraction();
     this.stateMachine.forceState('dragged');
     this.visualCoordinator.setMotionState('drag-static');
-    this.dragPoseController.reset();
+    this.dragSlowSince = null;
+    this.dragCurrentAnimation = null;
+    this.clearDragWaitingTimer();
 
-    const scaleFactor = window.devicePixelRatio || 1;
-    this.dragDirectionTracker.startDrag(initialDirection, scaleFactor);
+    void this.manualDragController.begin(pointerScreenX, pointerScreenY).then(async () => {
+      if (!this.isDraggingWindow || sessionId !== this.activeDragSessionId) return;
+      const floorInfo = await this.floorController.getCurrentFloorInfo();
+      if (import.meta.env.DEV) {
+        console.info(
+          `[manual-drag]\n` +
+          `session=${sessionId}\n` +
+          `phase=start\n` +
+          `startWindow=${floorInfo ? `${floorInfo.workAreaLeft},${floorInfo.floorWindowY}` : 'unknown'}\n` +
+          `startPointer=${pointerScreenX},${pointerScreenY}\n` +
+          `floorY=${floorInfo?.floorWindowY ?? 'unknown'}`
+        );
+      }
+      if (initialDirection) {
+        this.setManualDragAnimation(initialDirection, 0);
+      }
+    });
   }
 
-  private updateManualDragDirection(direction: HorizontalDirection) {
+  private handleManualDragProgress(progress: ManualDragProgress) {
+    if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
+
+    const now = performance.now();
+    const predominantlyVertical =
+      Math.abs(progress.totalLogicalY) > Math.abs(progress.totalLogicalX) * 1.15;
+    let animation: string | null = null;
+
+    if (predominantlyVertical) {
+      this.dragSlowSince = null;
+      this.clearDragWaitingTimer();
+      animation = Math.abs(progress.velocityY) >= 60 ? 'jumping' : 'waiting';
+      this.visualCoordinator.setMotionState(
+        animation === 'jumping' ? 'drag-vertical' : 'drag-static'
+      );
+    } else if (Math.abs(progress.velocityX) >= 60 && progress.direction) {
+      this.dragSlowSince = null;
+      this.clearDragWaitingTimer();
+      animation = progress.direction === 'left' ? 'running-left' : 'running-right';
+      this.visualCoordinator.setMotionState(
+        progress.direction === 'left' ? 'drag-left' : 'drag-right'
+      );
+    } else if (Math.abs(progress.velocityX) < 35) {
+      this.dragSlowSince ??= now;
+      this.scheduleDragWaiting();
+      if (now - this.dragSlowSince >= 160) {
+        animation = 'waiting';
+        this.visualCoordinator.setMotionState('drag-static');
+      }
+    } else {
+      this.dragSlowSince = null;
+      this.clearDragWaitingTimer();
+      animation = this.dragCurrentAnimation;
+    }
+
+    if (animation === 'running-left' || animation === 'running-right') {
+      this.setManualDragAnimation(
+        animation === 'running-left' ? 'left' : 'right',
+        progress.totalHorizontalDistance
+      );
+    } else if (animation && animation !== this.dragCurrentAnimation) {
+      this.player.endDistanceDriven();
+      this.actionDirector.requestAction({
+        id: `drag-${animation}`,
+        animation,
+        priority: 'locomotion',
+        source: 'user',
+        interruptPolicy: 'extend-same',
+        fallback: 'idle'
+      });
+      this.dragCurrentAnimation = animation;
+    }
+
+    if (import.meta.env.DEV) {
+      console.info(
+        `[manual-drag]\n` +
+        `session=${this.activeDragSessionId}\n` +
+        `phase=progress\n` +
+        `dx=${progress.totalLogicalX.toFixed(1)}\n` +
+        `dy=${progress.totalLogicalY.toFixed(1)}\n` +
+        `vx=${progress.velocityX.toFixed(1)}\n` +
+        `vy=${progress.velocityY.toFixed(1)}\n` +
+        `direction=${progress.direction ?? 'none'}\n` +
+        `animation=${animation ?? this.dragCurrentAnimation ?? 'none'}`
+      );
+    }
+  }
+
+  private setManualDragAnimation(direction: HorizontalDirection, totalDistance: number) {
     if (!this.isDraggingWindow) return;
     const config = this.getMotionConfig();
     const source = this.loader.getCharacterSource();
     const res = resolveDirectionalAnimation(source, direction, (name) => this.player.hasAnimation(name));
 
     if (this.player.getCurrentAnimation() !== res.animation) {
-      this.facingController.setFacing(res.facing, res.useFacingMirror ? config.supportsHorizontalFlip : false);
+      this.facingController.setFacing(
+        res.facing,
+        res.useFacingMirror ? config.supportsHorizontalFlip : false
+      );
       this.player.setFacing?.(res.facing);
       this.player.beginDistanceDriven({
         animation: res.animation,
@@ -685,60 +797,53 @@ export class PetController {
         strideLengthPx: DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx
       });
     }
-
-    if (this.dragAnimTimer !== null) {
-      clearTimeout(this.dragAnimTimer);
-      this.dragAnimTimer = null;
-    }
+    this.dragCurrentAnimation = direction === 'left' ? 'running-left' : 'running-right';
+    this.player.updateDistanceDriven(totalDistance);
   }
 
-  private handleManualDragProgress(progress: DragProgress) {
-    if (this.stateMachine.getState() !== 'dragged' || !this.isDraggingWindow) return;
-
-    const pose = this.dragPoseController.resolveDragPose(
-      progress.deltaLogicalX,
-      progress.direction
-    );
-
-    let anim = "waiting";
-    if (pose === "carried-left") {
-      anim = "running-left";
-      this.visualCoordinator.setMotionState("drag-left");
-    } else if (pose === "carried-right") {
-      anim = "running-right";
-      this.visualCoordinator.setMotionState("drag-right");
-    } else if (pose === "carried-vertical") {
-      anim = "jumping";
-      this.visualCoordinator.setMotionState("drag-vertical");
-    } else {
-      this.visualCoordinator.setMotionState("drag-static");
-    }
-
-    if (anim === "running-left" || anim === "running-right") {
-      if (this.player.getCurrentAnimation() !== anim) {
-        this.player.beginDistanceDriven({
-          animation: anim,
-          frameCount: 8,
-          strideLengthPx: DEFAULT_CODEX_LOCOMOTION.runStrideLengthPx
+  private scheduleDragWaiting() {
+    if (this.dragWaitingTimer !== null) return;
+    this.dragWaitingTimer = window.setTimeout(() => {
+      this.dragWaitingTimer = null;
+      if (!this.isDraggingWindow || this.dragSlowSince === null) return;
+      if (performance.now() - this.dragSlowSince >= 160) {
+        this.player.endDistanceDriven();
+        this.actionDirector.requestAction({
+          id: 'drag-waiting',
+          animation: 'waiting',
+          priority: 'locomotion',
+          source: 'user',
+          interruptPolicy: 'extend-same',
+          fallback: 'idle'
         });
+        this.dragCurrentAnimation = 'waiting';
+        this.visualCoordinator.setMotionState('drag-static');
       }
-      this.player.updateDistanceDriven(progress.totalLogicalDistance);
-    } else {
-      this.player.endDistanceDriven();
-      this.actionDirector.requestAction({
-        id: `drag-${pose}`,
-        animation: anim,
-        priority: 'locomotion',
-        source: 'user',
-        interruptPolicy: 'extend-same'
-      });
+    }, 160);
+  }
+
+  private clearDragWaitingTimer() {
+    if (this.dragWaitingTimer !== null) {
+      clearTimeout(this.dragWaitingTimer);
+      this.dragWaitingTimer = null;
     }
   }
 
-  private async handleDragRelease() {
+  private async finishManualDrag(sessionId: number, reason: string) {
+    if (
+      sessionId !== this.activeDragSessionId ||
+      sessionId === this.completedDragSessionId
+    ) {
+      return;
+    }
+
+    this.completedDragSessionId = sessionId;
     this.isDraggingWindow = false;
-    this.dragDirectionTracker.stopDrag();
+    this.clearDragWaitingTimer();
     this.petRoot.classList.remove('is-pressed');
+    this.floorController.invalidateCache();
+
+    const summary: ManualDragSummary = await this.manualDragController.end(reason);
     this.player.endDistanceDriven();
 
     const floorInfo = await this.floorController.getCurrentFloorInfo();
@@ -746,11 +851,28 @@ export class PetController {
       this.trySetState('idle');
       return;
     }
-    
-    const appWindow = getCurrentWindow();
-    const pos = await appWindow.outerPosition();
-    
-    if (pos.y < floorInfo.floorWindowY - 3 && this.settings.gravityEnabled) {
+
+    const intentionallyLifted =
+      summary.maximumUpwardLiftLogical >= 16 ||
+      (summary.predominantlyVertical && summary.totalLogicalY <= -12);
+    const willFall =
+      intentionallyLifted &&
+      this.settings.gravityEnabled &&
+      summary.endPhysicalY < floorInfo.floorWindowY - 3;
+
+    if (import.meta.env.DEV) {
+      console.info(
+        `[manual-drag]\n` +
+        `session=${sessionId}\n` +
+        `phase=end\n` +
+        `reason=${reason}\n` +
+        `lift=${summary.maximumUpwardLiftLogical.toFixed(1)}\n` +
+        `vertical=${summary.predominantlyVertical}\n` +
+        `willFall=${willFall}`
+      );
+    }
+
+    if (willFall) {
       if (this.trySetState('falling')) {
         this.motionController.startFall(floorInfo, this.settings, () => {
           this.trySetState('landing');
@@ -759,9 +881,9 @@ export class PetController {
         this.trySetState('idle');
       }
     } else {
-      if (pos.y !== floorInfo.floorWindowY) {
-        await appWindow.setPosition(new PhysicalPosition(pos.x, floorInfo.floorWindowY));
-      }
+      await getCurrentWindow().setPosition(
+        new PhysicalPosition(summary.endPhysicalX, floorInfo.floorWindowY)
+      );
       if (!this.trySetState('landing')) {
         this.trySetState('idle');
       }
@@ -848,23 +970,35 @@ export class PetController {
   }
 
   private async checkInitialPosition() {
+    const firstRunDone = localStorage.getItem('first_run_done');
+    if (!firstRunDone) {
+      await this.movePetToDefaultPosition();
+      localStorage.setItem('first_run_done', 'true');
+      return;
+    }
+
     const floorInfo = await this.floorController.getCurrentFloorInfo();
     if (!floorInfo) return;
     const appWindow = getCurrentWindow();
     const pos = await appWindow.outerPosition();
-    if (pos.y > floorInfo.floorWindowY) {
+    if (pos.y !== floorInfo.floorWindowY) {
       await appWindow.setPosition(new PhysicalPosition(pos.x, floorInfo.floorWindowY));
     }
   }
 
   private async movePetToDefaultPosition() {
-    const monitor = await primaryMonitor();
-    if (monitor) {
-      const appWindow = getCurrentWindow();
-      const centerX = Math.round(monitor.position.x + (monitor.size.width / 2) - 100);
-      const centerY = Math.round(monitor.position.y + (monitor.size.height / 2) - 100);
-      await appWindow.setPosition(new PhysicalPosition(centerX, centerY));
-    }
+    this.floorController.invalidateCache();
+    const floorInfo = await this.floorController.getCurrentFloorInfo();
+    if (!floorInfo) return;
+
+    const appWindow = getCurrentWindow();
+    const size = await appWindow.outerSize();
+    const centerX = floorInfo.workAreaLeft + Math.round(
+      (floorInfo.workAreaRight - floorInfo.workAreaLeft - size.width) / 2
+    );
+    await appWindow.setPosition(
+      new PhysicalPosition(centerX, floorInfo.floorWindowY)
+    );
   }
 
   private async resizePetWindowForCharacter(manifest: CharacterManifest, scale: number): Promise<void> {

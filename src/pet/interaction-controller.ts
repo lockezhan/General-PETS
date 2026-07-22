@@ -19,8 +19,13 @@ export interface InteractionControllerCallbacks {
   getCurrentState: () => string;
   getFacing: () => "left" | "right";
   hasAnimation: (name: string) => boolean;
-  onDragStart: (initialDirection: "left" | "right" | null) => void;
-  onDragEnd: () => void;
+  onDragStart: (
+    initialDirection: "left" | "right" | null,
+    pointerScreenX: number,
+    pointerScreenY: number
+  ) => void;
+  onDragMove: (pointerScreenX: number, pointerScreenY: number) => void;
+  onDragEnd: (reason?: string) => void;
   onPressVisualStart: () => void;
   onPressVisualCancel: () => void;
   onStrokeReaction?: (areaId: string | null) => void;
@@ -172,16 +177,19 @@ export class InteractionController {
         }
         this.dialogueDirector.resetStrokeDialogueState();
       },
-      onDragStart: (areaId, initialDirection) => {
-        this.callbacks.onDragStart(initialDirection);
+      onDragStart: (areaId, initialDirection, pointerScreenX, pointerScreenY) => {
+        this.callbacks.onDragStart(initialDirection, pointerScreenX, pointerScreenY);
         this.debugOverlay.updateEventInfo("dragStart", `area:${areaId};direction:${initialDirection ?? "vertical"}`);
       },
-      onDragEnd: (areaId) => {
+      onDragMove: (pointerScreenX, pointerScreenY) => {
+        this.callbacks.onDragMove(pointerScreenX, pointerScreenY);
+      },
+      onDragEnd: (areaId, reason) => {
         this.activeReactionSession?.finish("dragEnd");
         this.activeReactionSession = null;
         this.dialogueDirector.resetStrokeDialogueState();
-        this.callbacks.onDragEnd();
-        this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId}`);
+        this.callbacks.onDragEnd(reason);
+        this.debugOverlay.updateEventInfo("dragEnd", `area:${areaId};reason:${reason ?? "unknown"}`);
       },
       isInteractionEnabled: () => {
         return this.settings.interactionEnabled;

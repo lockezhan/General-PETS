@@ -177,6 +177,8 @@ export class CodexAtlasRenderer implements AnimationRenderer {
     this.currentMappedAnimation = mapped;
     this.currentConfig = baseConfig;
     this.distanceConfig = config;
+    this.currentFrameIndex = 0;
+    this.renderFrame();
   }
 
   updateDistanceDriven(totalLogicalDistance: number): void {

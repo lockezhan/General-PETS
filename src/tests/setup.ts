@@ -2,8 +2,7 @@ import { vi } from 'vitest';
 
 vi.mock('@tauri-apps/api/window', () => {
   return {
-    getCurrentWindow: () => ({
-      startDragging: vi.fn().mockResolvedValue(undefined),
+    getCurrentWindow: vi.fn(() => ({
       outerPosition: vi.fn().mockResolvedValue({ x: 0, y: 0 }),
       outerSize: vi.fn().mockResolvedValue({ width: 220, height: 260 }),
       scaleFactor: vi.fn().mockResolvedValue(1),
@@ -13,7 +12,7 @@ vi.mock('@tauri-apps/api/window', () => {
       setAlwaysOnTop: vi.fn().mockResolvedValue(undefined),
       setSize: vi.fn().mockResolvedValue(undefined),
       setPosition: vi.fn().mockResolvedValue(undefined),
-    }),
+    })),
     currentMonitor: vi.fn().mockResolvedValue({
       workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } },
       scaleFactor: 1
