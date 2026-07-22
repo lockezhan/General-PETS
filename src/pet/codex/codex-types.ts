@@ -82,5 +82,10 @@ export interface CodexAdapterConfig {
     defaultScale: number;
   };
   animationMapping: CodexAnimationMapping;
+  locomotion?: {
+    walkStrideLengthPx: number;
+    dragStrideLengthPx: number;
+    runStrideLengthPx: number;
+  };
   interactionMode: "whole-sprite-default";
 }

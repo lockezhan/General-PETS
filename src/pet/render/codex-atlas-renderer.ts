@@ -15,6 +15,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   private atlasImage: HTMLImageElement;
   
   private clock: AnimationClock;
+  private speedMultiplier = 1.0;
 
   private currentAnimation: string | null = null;
   private currentMappedAnimation: CodexV1AnimationName = 'idle';
@@ -155,7 +156,7 @@ export class CodexAtlasRenderer implements AnimationRenderer {
       timing = { ...timing, fallback: options.fallback };
     }
 
-    const speed = options?.speedMultiplier !== undefined ? options.speedMultiplier : 1.0;
+    const speed = options?.speedMultiplier ?? this.speedMultiplier;
     this.traceAnimationRequest(name, resolvedName, mapped, config.row, true);
     this.clock.play(resolvedName, timing, config.frameCount, speed);
   }
@@ -252,7 +253,8 @@ export class CodexAtlasRenderer implements AnimationRenderer {
   }
 
   updateSpeedMultiplier(speed: number): void {
-    this.clock.updateSpeedMultiplier(speed);
+    this.speedMultiplier = Math.max(0.5, Math.min(1.5, speed));
+    this.clock.updateSpeedMultiplier(this.speedMultiplier);
   }
 
   destroy(): void {

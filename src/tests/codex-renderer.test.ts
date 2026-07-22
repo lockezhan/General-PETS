@@ -134,6 +134,9 @@ describe('CodexAtlasRenderer', () => {
     renderer.updateDistanceDriven(72); // Full stride -> phase 0 -> frame 0
     expect((renderer as any).currentFrameIndex).toBe(0);
 
+    renderer.updateDistanceDriven(288); // Four full 72px gait cycles -> frame 0
+    expect((renderer as any).currentFrameIndex).toBe(0);
+
     renderer.endDistanceDriven('idle');
     expect(renderer.getPlaybackMode()).toBe('clock');
     expect(renderer.getCurrentAnimation()).toBe('idle');

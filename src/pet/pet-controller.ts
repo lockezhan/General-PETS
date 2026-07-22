@@ -22,7 +22,7 @@ import { MotionController, MotionProgress } from './motion-controller';
 import { InteractionManifest, InteractionExecutionContext } from './interaction/interaction-types';
 import { validateInteractions } from './character-validator';
 import { DEFAULT_CODEX_HIT_AREAS, BehaviorContext } from './natural/natural-types';
-import { getDialogueDurationMs } from './natural/dialogue-director';
+import { DialogueDirector, getDialogueDurationMs } from './natural/dialogue-director';
 import { ActionDirector } from './natural/action-director';
 import { BehaviorPlanner, PlannedBehavior } from './natural/behavior-planner';
 import { PetVisualCoordinator } from './natural/visual-coordinator';
@@ -30,6 +30,10 @@ import { resolveInteractionAnimation } from './interaction/resolve-interaction-a
 import { calculatePetVisualLayout } from './visual-layout';
 import { migratePetSettings } from '../shared/settings-migration';
 import { ManualWindowDragController, ManualDragProgress, ManualDragSummary } from './manual-window-drag-controller';
+import { getAmbientDialogueProbability, getAmbientPresentation, getInteractionPresentation, randomDuration } from './natural/action-presentation-profiles';
+
+export const GAIT_TEST_DISTANCE_LOGICAL_PX = 288;
+export const GAIT_CALIBRATION_STRIDES = [48, 60, 72, 84, 96, 120] as const;
 
 export interface WalkDebugSnapshot {
   requestId: number;
@@ -50,8 +54,9 @@ export interface WalkDebugSnapshot {
 }
 
 export const DEFAULT_CODEX_LOCOMOTION = {
-  walkStrideLengthPx: 120,
-  runStrideLengthPx: 144,
+  walkStrideLengthPx: 72,
+  dragStrideLengthPx: 72,
+  runStrideLengthPx: 88,
   walkFrameCount: 8,
   runFrameCount: 6,
 };
@@ -85,6 +90,10 @@ export class PetController {
   private settings: PetSettings = { ...DEFAULT_SETTINGS };
   private dialogues: any = null;
   private defaultDialogues: any = null;
+  private ambientDialogueDirector = new DialogueDirector();
+  private lastAmbientDialogueAt = Number.NEGATIVE_INFINITY;
+  private ambientDialogueCooldownMs = 0;
+  private activeAmbientAction: PlannedBehavior['logicalAction'] | null = null;
   private interactionManifest: InteractionManifest | null = null;
 
   private isDraggingWindow = false;
@@ -322,6 +331,7 @@ export class PetController {
     } else {
       this.player = new FrameSequenceRenderer(this.loader, this.petImage);
     }
+    this.player.updateSpeedMultiplier?.(this.settings.animationSpeedMultiplier);
 
     if (!this.actionDirector) {
       this.actionDirector = new ActionDirector(this.player);
@@ -521,35 +531,94 @@ export class PetController {
 
   private handleBehaviorPlan(plan: PlannedBehavior) {
     if (this.stateMachine.getState() !== 'idle' || this.isDraggingWindow) return;
+    this.clearTimers();
 
     if (plan.logicalAction === 'walk' && plan.targetDirection) {
       this.beginDirectionalWalk(plan.targetDirection, plan.durationMs || 5000, "autonomous");
-    } else {
-      const animMap: Record<string, string> = {
-        wave: 'waving',
-        review: 'review',
-        sit: 'waiting',
-        hop: 'jumping',
-        run: 'running',
-        idle: 'idle'
-      };
-      const anim = animMap[plan.logicalAction] || 'idle';
-      this.visualCoordinator.setReactionState(anim as any, "ambient");
-      this.actionDirector.requestAction({
-        id: plan.id,
-        animation: anim,
-        priority: 'ambient',
-        source: 'behavior',
-        fallback: 'idle',
-        onComplete: () => {
-          if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
-            this.requestIdleVisual(`behavior ${anim} completed`);
-          }
-        }
-      });
+      return;
     }
 
-    this.startIdleTimers();
+    const anim = this.resolveAmbientAnimation(plan.logicalAction) ?? 'idle';
+    const presentation = getAmbientPresentation(anim);
+    const isTimedLoop = plan.logicalAction === 'idle' || plan.logicalAction === 'sit' || plan.logicalAction === 'run';
+    this.visualCoordinator.setReactionState(anim as any, 'ambient');
+    const accepted = this.actionDirector.requestAction({
+      id: plan.id,
+      animation: anim,
+      priority: 'ambient',
+      source: 'behavior',
+      loop: isTimedLoop ? true : presentation.loop,
+      repeatCount: presentation.repeatCount,
+      minimumVisibleMs: presentation.minimumVisibleMs,
+      holdAfterMs: presentation.holdAfterMs,
+      onComplete: isTimedLoop ? undefined : () => {
+        this.completeAmbientBehavior(plan.logicalAction, `behavior ${anim} completed`);
+      }
+    });
+    if (!accepted) {
+      this.startIdleTimers();
+      return;
+    }
+
+    this.activeAmbientAction = plan.logicalAction;
+    this.behaviorPlanner.recordActionStarted(plan.logicalAction);
+    this.tryShowAmbientDialogue(plan.logicalAction);
+
+    if (isTimedLoop) {
+      const durationMs = plan.logicalAction === 'idle'
+        ? (plan.durationMs ?? randomDuration({ min: 3000, max: 6000 }))
+        : randomDuration(presentation.durationRangeMs ?? { min: 3000, max: 5000 });
+      this.sitTimer = window.setTimeout(() => {
+        this.sitTimer = null;
+        this.completeAmbientBehavior(plan.logicalAction, `timed behavior ${anim} completed`);
+      }, durationMs);
+    }
+  }
+
+  private completeAmbientBehavior(logicalAction: PlannedBehavior['logicalAction'], reason: string): void {
+    if (this.activeAmbientAction === logicalAction) this.activeAmbientAction = null;
+    this.behaviorPlanner.recordActionCompleted(logicalAction);
+    if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
+      this.requestIdleVisual(reason);
+    }
+  }
+
+  private cancelAmbientBehavior(reason: string): void {
+    if (this.activeAmbientAction) {
+      this.behaviorPlanner.recordActionCompleted(this.activeAmbientAction);
+      this.activeAmbientAction = null;
+    }
+    this.clearTimers();
+    if (import.meta.env.DEV) console.info(`[ambient] cancelled reason=${reason}`);
+  }
+
+  private tryShowAmbientDialogue(logicalAction: PlannedBehavior['logicalAction']): void {
+    if (!['wave', 'review', 'sit', 'hop'].includes(logicalAction)) return;
+    if (this.isDraggingWindow || this.stateMachine.getState() !== 'idle') return;
+    if (this.behaviorPlanner.getTimeSinceLastUserInteraction() < 8000) return;
+
+    const now = performance.now();
+    if (now - this.lastAmbientDialogueAt < this.ambientDialogueCooldownMs) return;
+    const probability = getAmbientDialogueProbability(this.settings.dialogueFrequency, logicalAction);
+    const allowed = this.ambientDialogueDirector.shouldShowDialogue(
+      'ambient',
+      { ...this.settings, dialogueFrequency: 'normal' },
+      now,
+      false,
+      probability
+    );
+    if (!allowed) return;
+
+    const preferredGroup = logicalAction === 'wave' || logicalAction === 'review'
+      ? logicalAction
+      : 'idle';
+    const text = this.getRandomDialogueFromGroup(preferredGroup)
+      ?? (preferredGroup === 'idle' ? null : this.getRandomDialogueFromGroup('idle'));
+    if (!text) return;
+    this.showBubble(text);
+    this.ambientDialogueDirector.recordDialogueShown(now);
+    this.lastAmbientDialogueAt = now;
+    this.ambientDialogueCooldownMs = 25000 + Math.random() * 20000;
   }
 
   public playCustomAnimation(
@@ -558,10 +627,12 @@ export class PetController {
     _context?: InteractionExecutionContext
   ): boolean {
     this.behaviorPlanner.recordUserInteraction();
+    this.cancelAmbientBehavior('user animation request');
     this.cancelActiveLocomotion("user animation request");
     this.visualCoordinator.setReactionState(animName as any, "user");
 
     const isLongPressReview = animName === 'review';
+    const presentation = getInteractionPresentation(animName);
     const stateBefore = this.stateMachine.getState();
     const accepted = this.actionDirector.requestAction({
       id: isLongPressReview
@@ -572,8 +643,10 @@ export class PetController {
       source: 'user',
       fallback: isLongPressReview ? 'idle' : fallback,
       interruptPolicy: isLongPressReview ? 'immediate' : 'extend-same',
-      loop: isLongPressReview ? false : undefined,
-      holdAfterMs: isLongPressReview ? 300 : undefined,
+      loop: presentation.loop ?? false,
+      repeatCount: presentation.repeatCount,
+      minimumVisibleMs: presentation.minimumVisibleMs,
+      holdAfterMs: presentation.holdAfterMs,
       onComplete: () => {
         if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
           this.requestIdleVisual(`animation ${animName} completed`);
@@ -671,10 +744,14 @@ export class PetController {
   }
 
   private async startIntentionalFall(reason: string): Promise<void> {
+    this.cancelAmbientBehavior(reason);
     this.cancelActiveLocomotion(reason);
     this.actionDirector.clearCurrentAction(reason);
     const floorInfo = await this.floorController.getCurrentFloorInfo();
-    if (!floorInfo) return;
+    if (!floorInfo) {
+      this.requestIdleVisual('fall floor unavailable');
+      return;
+    }
     this.stateMachine.forceState('falling');
     this.visualCoordinator.setMotionState('falling');
     this.actionDirector.requestAction({
@@ -696,17 +773,30 @@ export class PetController {
     this.player?.endDistanceDriven?.();
   }
 
-  private async beginDirectionalWalk(direction: "left" | "right", durationMs: number, _reason: "test" | "autonomous" | "onEdge") {
+  private async beginDirectionalWalk(
+    direction: "left" | "right",
+    durationMs: number,
+    reason: "test" | "autonomous" | "onEdge",
+    ambientSession: boolean = reason === 'autonomous'
+  ) {
     if (this.isDraggingWindow) return;
+    if (reason !== 'onEdge') this.clearTimers();
 
     this.walkRequestId++;
     const currentWalkId = this.walkRequestId;
 
     const floorInfo = await this.floorController.getCurrentFloorInfo();
-    if (!floorInfo) return;
+    if (!floorInfo) {
+      this.startIdleTimers();
+      return;
+    }
 
     const config = this.getMotionConfig();
     const speed = config.walkSpeed;
+    const locomotion = this.getLocomotionProfile();
+    const effectiveDurationMs = reason === 'test' && import.meta.env.DEV
+      ? (GAIT_TEST_DISTANCE_LOGICAL_PX / Math.max(1, speed * this.settings.walkSpeedMultiplier)) * 1000
+      : durationMs;
     const source = this.loader.getCharacterSource();
     const res = resolveDirectionalAnimation(source, direction, (name) => this.player.hasAnimation(name));
 
@@ -717,34 +807,50 @@ export class PetController {
     this.player.beginDistanceDriven({
       animation: res.animation,
       frameCount: 8,
-      strideLengthPx: DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx
+      strideLengthPx: locomotion.walkStrideLengthPx
     });
 
     this.stateMachine.forceState('walk');
+    if (reason === 'autonomous') {
+      this.activeAmbientAction = 'walk';
+      this.behaviorPlanner.recordActionStarted('walk');
+    }
+    let committedDistance = 0;
+    let commitCount = 0;
 
     this.motionController.startWalk(
       speed,
       direction,
-      durationMs,
+      effectiveDurationMs,
       floorInfo,
       this.settings,
       () => {
         if (currentWalkId !== this.walkRequestId) return;
         if (this.settings.edgeBehavior === 'turn') {
           const newDir = direction === 'left' ? 'right' : 'left';
-          this.beginDirectionalWalk(newDir, durationMs, "onEdge");
+          this.beginDirectionalWalk(newDir, durationMs, "onEdge", ambientSession);
         } else {
           this.cancelActiveLocomotion("hit edge stop");
-          this.trySetState('idle');
+          if (ambientSession) this.completeAmbientBehavior('walk', 'walk hit edge');
+          else this.trySetState('idle');
         }
       },
       () => {
         if (currentWalkId !== this.walkRequestId) return;
+        if (reason === 'test' && import.meta.env.DEV) {
+          console.info(
+            `[gait-calibration] planned=${GAIT_TEST_DISTANCE_LOGICAL_PX} committed=${committedDistance.toFixed(1)} ` +
+            `stride=${locomotion.walkStrideLengthPx} cycles=${(committedDistance / locomotion.walkStrideLengthPx).toFixed(2)} commits=${commitCount}`
+          );
+        }
         this.cancelActiveLocomotion("walk complete");
-        this.trySetState('idle');
+        if (ambientSession) this.completeAmbientBehavior('walk', 'walk completed');
+        else this.trySetState('idle');
       },
       (progress: MotionProgress) => {
         if (currentWalkId !== this.walkRequestId) return;
+        committedDistance = progress.totalLogicalDistance;
+        commitCount = progress.commitCount;
         this.player.updateDistanceDriven(progress.totalLogicalDistance);
       }
     );
@@ -761,7 +867,7 @@ export class PetController {
     this.floorController.invalidateCache();
     this.cancelActiveLocomotion("manual drag start");
     this.actionDirector.clearCurrentAction("manual drag start");
-    this.behaviorPlanner.cancel("manual drag start");
+    this.cancelAmbientBehavior("manual drag start");
     this.behaviorPlanner.recordUserInteraction();
     this.stateMachine.forceState('dragged');
     this.visualCoordinator.setMotionState('drag-static');
@@ -871,7 +977,7 @@ export class PetController {
       this.player.beginDistanceDriven({
         animation: res.animation,
         frameCount: 8,
-        strideLengthPx: DEFAULT_CODEX_LOCOMOTION.walkStrideLengthPx
+        strideLengthPx: this.getLocomotionProfile().dragStrideLengthPx
       });
     }
     this.dragCurrentAnimation = direction === 'left' ? 'running-left' : 'running-right';
@@ -982,18 +1088,26 @@ export class PetController {
   private startIdleTimers() {
     this.clearTimers();
     if (this.stateMachine.getState() !== 'idle') return;
-    
+    const history = this.behaviorPlanner.getHistory();
     const context: BehaviorContext = {
       idleDurationMs: 0,
-      sinceLastUserInteractionMs: performance.now(),
-      lastActionId: this.actionDirector?.getCurrentRequest()?.animation || 'idle',
-      recentActions: [],
+      sinceLastUserInteractionMs: this.behaviorPlanner.getTimeSinceLastUserInteraction(),
+      lastActionId: history.lastActionId,
+      recentActions: history.recentActions,
       facing: this.facingController.getFacing(),
       nearLeftEdge: false,
       nearRightEdge: false,
       currentHour: new Date().getHours()
     };
-    const availableActions = ['idle', 'walk', 'sit', 'wave', 'review', 'hop'];
+    const availableActions = [
+      'idle',
+      ...(this.settings.autoMovementEnabled ? ['walk'] : []),
+      ...(this.resolveAmbientAnimation('sit') ? ['sit'] : []),
+      ...(this.resolveAmbientAnimation('wave') ? ['wave'] : []),
+      ...(this.resolveAmbientAnimation('review') ? ['review'] : []),
+      ...(this.resolveAmbientAnimation('hop') ? ['hop'] : []),
+      ...(this.settings.autoMovementEnabled && this.resolveAmbientAnimation('run') ? ['run'] : [])
+    ];
     this.behaviorPlanner.scheduleNext(this.settings, context, availableActions);
     
     if (this.settings.sleepEnabled) {
@@ -1029,6 +1143,38 @@ export class PetController {
       return { ...DEFAULT_MOTION_CONFIG, ...manifest.motion };
     }
     return DEFAULT_MOTION_CONFIG;
+  }
+
+  private getLocomotionProfile() {
+    const configured = this.loader.getAdapterConfig()?.locomotion;
+    const profile = { ...DEFAULT_CODEX_LOCOMOTION, ...(configured ?? {}) };
+    if (import.meta.env.DEV) {
+      const requested = Number(import.meta.env.VITE_GAIT_STRIDE);
+      if (GAIT_CALIBRATION_STRIDES.includes(requested as typeof GAIT_CALIBRATION_STRIDES[number])) {
+        profile.walkStrideLengthPx = requested;
+      }
+    }
+    return profile;
+  }
+
+  private resolveAmbientAnimation(logicalAction: PlannedBehavior['logicalAction']): string | null {
+    switch (logicalAction) {
+      case 'idle':
+        return this.player.hasAnimation('idle') ? 'idle' : null;
+      case 'sit':
+        return this.player.hasAnimation('waiting') ? 'waiting'
+          : this.player.hasAnimation('sit') ? 'sit' : null;
+      case 'wave':
+        return resolveInteractionAnimation('singleClick', (name) => this.player.hasAnimation(name));
+      case 'review':
+        return resolveInteractionAnimation('longPress', (name) => this.player.hasAnimation(name));
+      case 'hop':
+        return resolveInteractionAnimation('doubleClick', (name) => this.player.hasAnimation(name));
+      case 'run':
+        return this.player.hasAnimation('running') ? 'running' : null;
+      default:
+        return null;
+    }
   }
 
   private getRandomDialogueFromGroup(group: string): string | null {

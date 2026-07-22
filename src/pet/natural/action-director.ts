@@ -13,6 +13,7 @@ export class ActionDirector {
   private currentRequest: PetActionRequest | null = null;
   private activeToken: number = 0;
   private holdTimer: number | null = null;
+  private actionStartedAt = 0;
 
   constructor(player: AnimationRenderer) {
     this.player = player;
@@ -63,6 +64,7 @@ export class ActionDirector {
 
     const newToken = ++this.activeToken;
     this.currentRequest = request;
+    this.actionStartedAt = performance.now();
 
     console.log(
       `[action-director] action started token=${newToken} id=${request.id} anim=${request.animation} pri=${request.priority}`
@@ -70,44 +72,63 @@ export class ActionDirector {
 
     const isLoopingByDefault = ['idle', 'waiting', 'running'].includes(request.animation) || request.animation.startsWith('walk');
     const shouldLoop = request.loop ?? isLoopingByDefault;
+    const repeatCount = shouldLoop
+      ? 1
+      : Math.max(1, Math.min(4, Math.floor(request.repeatCount ?? 1)));
+    let completedRuns = 0;
 
-    this.player.play(request.animation, {
-      loop: shouldLoop,
-      fallback: request.fallback,
-      timingOverride: request.timingOverride,
-      onComplete: (_nextState) => {
-        // Token 保护：确保旧的回调不会影响后来发布的新 Action
-        if (this.activeToken === newToken) {
-          console.log(`[action-director] action completed token=${newToken} id=${request.id}`);
-          
-          const finishAction = () => {
-            if (this.activeToken !== newToken) return;
-            this.currentRequest = null;
-            if (request.onComplete) {
-              request.onComplete();
-            }
-            // An explicit completion handler may have entered a new action
-            // (for example landing -> idle). Never enqueue a stale fallback
-            // after that transition.
-            if (this.activeToken !== newToken) return;
-            if (request.fallback && request.fallback !== request.animation) {
-              this.requestAction({
-                id: `fallback-${request.id}`,
-                animation: request.fallback,
-                priority: "ambient",
-                source: "behavior"
-              });
-            }
-          };
-
-          if (request.holdAfterMs && request.holdAfterMs > 0) {
-            this.holdTimer = window.setTimeout(finishAction, request.holdAfterMs);
-          } else {
-            finishAction();
-          }
-        }
+    const finishAction = () => {
+      if (this.activeToken !== newToken) return;
+      this.currentRequest = null;
+      if (request.onComplete) {
+        request.onComplete();
       }
-    });
+      // An explicit completion handler may have entered a new action
+      // (for example landing -> idle). Never enqueue a stale fallback
+      // after that transition.
+      if (this.activeToken !== newToken) return;
+      if (request.fallback && request.fallback !== request.animation) {
+        this.requestAction({
+          id: `fallback-${request.id}`,
+          animation: request.fallback,
+          priority: "ambient",
+          source: "behavior"
+        });
+      }
+    };
+
+    const completeFinalRun = () => {
+      if (this.activeToken !== newToken) return;
+      console.log(`[action-director] action completed token=${newToken} id=${request.id} repeats=${completedRuns}`);
+      const elapsed = performance.now() - this.actionStartedAt;
+      const minimumRemaining = Math.max(0, (request.minimumVisibleMs ?? 0) - elapsed);
+      const finalDelay = minimumRemaining + (request.holdAfterMs ?? 0);
+      if (finalDelay > 0) {
+        this.holdTimer = window.setTimeout(finishAction, finalDelay);
+      } else {
+        finishAction();
+      }
+    };
+
+    const playRun = () => {
+      if (this.activeToken !== newToken) return;
+      this.player.play(request.animation, {
+        loop: shouldLoop,
+        fallback: request.fallback,
+        timingOverride: request.timingOverride,
+        onComplete: (_nextState) => {
+          if (this.activeToken !== newToken) return;
+          completedRuns++;
+          if (!shouldLoop && completedRuns < repeatCount) {
+            playRun();
+            return;
+          }
+          completeFinalRun();
+        }
+      });
+    };
+
+    playRun();
 
     return true;
   }

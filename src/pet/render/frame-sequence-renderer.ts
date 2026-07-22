@@ -7,6 +7,7 @@ export class FrameSequenceRenderer implements AnimationRenderer {
   private loader: CharacterLoader;
   private element: HTMLImageElement;
   private clock: AnimationClock;
+  private speedMultiplier = 1.0;
   private currentFrames: string[] = [];
   private badFrames = new Set<string>();
   private onCompleteCallback: ((nextState: PetState) => void) | null = null;
@@ -77,7 +78,7 @@ export class FrameSequenceRenderer implements AnimationRenderer {
       timing = { ...timing, fallback: options.fallback };
     }
 
-    const speed = options?.speedMultiplier !== undefined ? options.speedMultiplier : 1.0;
+    const speed = options?.speedMultiplier ?? this.speedMultiplier;
     this.clock.play(name, timing, this.currentFrames.length, speed);
   }
 
@@ -124,7 +125,8 @@ export class FrameSequenceRenderer implements AnimationRenderer {
   }
 
   updateSpeedMultiplier(speed: number): void {
-    this.clock.updateSpeedMultiplier(speed);
+    this.speedMultiplier = Math.max(0.5, Math.min(1.5, speed));
+    this.clock.updateSpeedMultiplier(this.speedMultiplier);
   }
 
   destroy(): void {

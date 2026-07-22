@@ -1,14 +1,27 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StrokeRecognizer } from '../pet/natural/stroke-recognizer';
 import { ActionDirector } from '../pet/natural/action-director';
-import { BehaviorPlanner } from '../pet/natural/behavior-planner';
+import { AMBIENT_DELAY_RANGES, BehaviorPlanner } from '../pet/natural/behavior-planner';
 import { DialogueDirector, getDialogueDurationMs } from '../pet/natural/dialogue-director';
 import { DragPoseController } from '../pet/natural/drag-pose-controller';
 import { PetVisualCoordinator } from '../pet/natural/visual-coordinator';
 import { NaturalPointerSession } from '../pet/natural/natural-types';
 import { DEFAULT_SETTINGS } from '../shared/defaults';
+import { CODEX_ACTION_PRESENTATION, getAmbientDialogueProbability } from '../pet/natural/action-presentation-profiles';
 
 describe('Natural Interaction System (Phase 7.1 Reset)', () => {
+  describe('Action presentation profiles', () => {
+    it('defines stable interaction timing and ambient dialogue probabilities', () => {
+      expect(CODEX_ACTION_PRESENTATION.waving).toMatchObject({ repeatCount: 2, minimumVisibleMs: 1600, holdAfterMs: 180 });
+      expect(CODEX_ACTION_PRESENTATION.jumping).toMatchObject({ repeatCount: 2, minimumVisibleMs: 1800, holdAfterMs: 220 });
+      expect(CODEX_ACTION_PRESENTATION.failed.minimumVisibleMs).toBe(1500);
+      expect(CODEX_ACTION_PRESENTATION.review.minimumVisibleMs).toBe(1700);
+      expect(getAmbientDialogueProbability('quiet', 'wave')).toBe(0.12);
+      expect(getAmbientDialogueProbability('normal', 'review')).toBe(0.30);
+      expect(getAmbientDialogueProbability('frequent', 'sit')).toBe(0.45);
+      expect(getAmbientDialogueProbability('normal', 'hop')).toBeCloseTo(0.12);
+    });
+  });
   describe('PetVisualCoordinator', () => {
     it('should correctly prioritize motion state over reaction state', () => {
       const coordinator = new PetVisualCoordinator();
@@ -163,6 +176,59 @@ describe('Natural Interaction System (Phase 7.1 Reset)', () => {
       expect(director.getCurrentRequest()?.priority).toBe('ambient');
       expect(director.getCurrentRequest()?.animation).toBe('idle');
     });
+
+    it('honors repeatCount, minimumVisibleMs and holdAfterMs under one token', () => {
+      vi.useFakeTimers();
+      const completions: Array<(state: string) => void> = [];
+      const onComplete = vi.fn();
+      const mockPlayer = {
+        play: vi.fn((_name: string, options: any) => completions.push(options.onComplete)),
+        stop: vi.fn(),
+        getCurrentAnimation: () => null,
+        getPlaybackMode: () => 'clock' as const,
+        beginDistanceDriven: vi.fn(),
+        updateDistanceDriven: vi.fn(),
+        endDistanceDriven: vi.fn(),
+      };
+      const director = new ActionDirector(mockPlayer as any);
+
+      director.requestAction({
+        id: 'wave-twice', animation: 'waving', priority: 'interaction', source: 'user',
+        loop: false, repeatCount: 2, minimumVisibleMs: 1600, holdAfterMs: 180, onComplete
+      });
+      const token = director.getActiveToken();
+      completions[0]('idle');
+      expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+      expect(director.getActiveToken()).toBe(token);
+
+      vi.advanceTimersByTime(500);
+      completions[1]('idle');
+      vi.advanceTimersByTime(1279);
+      expect(onComplete).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onComplete).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('ignores a stale completion callback after a newer action starts', () => {
+      const completions: Array<(state: string) => void> = [];
+      const firstComplete = vi.fn();
+      const mockPlayer = {
+        play: vi.fn((_name: string, options: any) => completions.push(options.onComplete)),
+        stop: vi.fn(),
+        getCurrentAnimation: () => null,
+        getPlaybackMode: () => 'clock' as const,
+        beginDistanceDriven: vi.fn(),
+        updateDistanceDriven: vi.fn(),
+        endDistanceDriven: vi.fn(),
+      };
+      const director = new ActionDirector(mockPlayer as any);
+      director.requestAction({ id: 'first', animation: 'waving', priority: 'ambient', source: 'behavior', onComplete: firstComplete });
+      director.requestAction({ id: 'second', animation: 'jumping', priority: 'interaction', source: 'user' });
+      completions[0]('idle');
+      expect(firstComplete).not.toHaveBeenCalled();
+      expect(director.getCurrentRequest()?.id).toBe('second');
+    });
   });
 
   describe('BehaviorPlanner', () => {
@@ -186,6 +252,52 @@ describe('Natural Interaction System (Phase 7.1 Reset)', () => {
       const plan = planner.planNextBehavior(DEFAULT_SETTINGS, context, ['walk', 'sit', 'wave', 'failed']);
       expect(plan.logicalAction).toBe('idle');
       expect(plan.logicalAction).not.toBe('failed');
+    });
+
+    it('uses the requested ambient frequency ranges', () => {
+      vi.useFakeTimers();
+      const timeoutSpy = vi.spyOn(window, 'setTimeout');
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      const planner = new BehaviorPlanner(vi.fn());
+      const context = {
+        idleDurationMs: 0, sinceLastUserInteractionMs: Infinity, lastActionId: 'idle', recentActions: [],
+        facing: 'right' as const, nearLeftEdge: false, nearRightEdge: false, currentHour: 12
+      };
+
+      for (const frequency of ['low', 'normal', 'high'] as const) {
+        planner.scheduleNext({ ...DEFAULT_SETTINGS, ambientBehaviorFrequency: frequency }, context, ['idle']);
+        const latestCall = timeoutSpy.mock.calls[timeoutSpy.mock.calls.length - 1];
+        expect(latestCall?.[1]).toBe(AMBIENT_DELAY_RANGES[frequency].min);
+      }
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it('keeps a bounded action history and suppresses consecutive special repeats', () => {
+      const planner = new BehaviorPlanner(vi.fn());
+      for (const action of ['idle', 'walk', 'sit', 'review', 'wave', 'wave', 'wave']) {
+        planner.recordActionStarted(action);
+      }
+      expect(planner.getHistory().recentActions).toHaveLength(6);
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const plan = planner.planNextBehavior(DEFAULT_SETTINGS, {
+        idleDurationMs: 0, sinceLastUserInteractionMs: Infinity, lastActionId: 'wave', recentActions: [],
+        facing: 'right', nearLeftEdge: false, nearRightEdge: false, currentHour: 12
+      }, ['idle', 'walk', 'sit', 'wave', 'review', 'hop', 'run', 'fail']);
+      expect(plan.logicalAction).not.toBe('wave');
+      expect(plan.logicalAction).not.toBe('fail');
+      vi.restoreAllMocks();
+    });
+
+    it('includes run in the ambient pool while excluding fail', () => {
+      const planner = new BehaviorPlanner(vi.fn());
+      vi.spyOn(Math, 'random').mockReturnValue(0.999);
+      const plan = planner.planNextBehavior(DEFAULT_SETTINGS, {
+        idleDurationMs: 0, sinceLastUserInteractionMs: Infinity, lastActionId: 'idle', recentActions: [],
+        facing: 'right', nearLeftEdge: false, nearRightEdge: false, currentHour: 12
+      }, ['idle', 'walk', 'sit', 'wave', 'review', 'hop', 'run', 'fail']);
+      expect(plan.logicalAction).toBe('run');
+      vi.restoreAllMocks();
     });
   });
 

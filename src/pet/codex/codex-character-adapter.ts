@@ -35,6 +35,11 @@ export class CodexCharacterAdapter {
         defaultScale: 1,
       },
       animationMapping: { ...DEFAULT_ANIMATION_MAPPING },
+      locomotion: {
+        walkStrideLengthPx: 72,
+        dragStrideLengthPx: 72,
+        runStrideLengthPx: 88,
+      },
       interactionMode: 'whole-sprite-default',
     };
   }
@@ -59,6 +64,15 @@ export class CodexCharacterAdapter {
     };
 
     const interactionMode = raw.interactionMode === 'whole-sprite-default' ? raw.interactionMode : defaultConfig.interactionMode;
+    const clampStride = (value: unknown, fallback: number, min: number, max: number) =>
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(min, Math.min(max, value))
+        : fallback;
+    const locomotion = {
+      walkStrideLengthPx: clampStride(raw.locomotion?.walkStrideLengthPx, defaultConfig.locomotion!.walkStrideLengthPx, 32, 192),
+      dragStrideLengthPx: clampStride(raw.locomotion?.dragStrideLengthPx, defaultConfig.locomotion!.dragStrideLengthPx, 32, 192),
+      runStrideLengthPx: clampStride(raw.locomotion?.runStrideLengthPx, defaultConfig.locomotion!.runStrideLengthPx, 32, 240),
+    };
 
     // 检查 animationMapping
     let animationMapping: CodexAnimationMapping = { ...DEFAULT_ANIMATION_MAPPING };
@@ -99,6 +113,7 @@ export class CodexCharacterAdapter {
       spriteVersionNumber,
       render,
       animationMapping,
+      locomotion,
       interactionMode,
     };
   }
