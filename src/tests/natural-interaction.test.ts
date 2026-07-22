@@ -121,6 +121,48 @@ describe('Natural Interaction System (Phase 7.1 Reset)', () => {
       });
       expect(ok3).toBe(false);
     });
+
+    it('must not retain a system-priority idle loop', () => {
+      const mockPlayer = {
+        play: vi.fn(),
+        stop: vi.fn(),
+        getCurrentAnimation: () => null,
+        getPlaybackMode: () => 'clock' as const,
+        beginDistanceDriven: vi.fn(),
+        updateDistanceDriven: vi.fn(),
+        endDistanceDriven: vi.fn(),
+      };
+      const director = new ActionDirector(mockPlayer as any);
+      expect(director.requestAction({
+        id: 'invalid-system-idle',
+        animation: 'idle',
+        priority: 'system',
+        source: 'system',
+        loop: true
+      })).toBe(false);
+      expect(director.getCurrentRequest()).toBeNull();
+    });
+
+    it('uses ambient priority for an action fallback', () => {
+      let completion: ((state: string) => void) | undefined;
+      const mockPlayer = {
+        play: vi.fn((_name: string, options: any) => { completion = options.onComplete; }),
+        stop: vi.fn(),
+        getCurrentAnimation: () => null,
+        getPlaybackMode: () => 'clock' as const,
+        beginDistanceDriven: vi.fn(),
+        updateDistanceDriven: vi.fn(),
+        endDistanceDriven: vi.fn(),
+      };
+      const director = new ActionDirector(mockPlayer as any);
+      expect(director.requestAction({
+        id: 'interaction-wave', animation: 'waving', priority: 'interaction',
+        source: 'user', fallback: 'idle', loop: false
+      })).toBe(true);
+      completion?.('idle');
+      expect(director.getCurrentRequest()?.priority).toBe('ambient');
+      expect(director.getCurrentRequest()?.animation).toBe('idle');
+    });
   });
 
   describe('BehaviorPlanner', () => {
@@ -159,6 +201,14 @@ describe('Natural Interaction System (Phase 7.1 Reset)', () => {
       expect(shortMs).toBeGreaterThanOrEqual(1800);
       expect(longMs).toBeLessThanOrEqual(4200);
       expect(longMs).toBeGreaterThan(shortMs);
+    });
+
+    it('allows the first valid dialogue immediately and applies event probabilities', () => {
+      const director = new DialogueDirector();
+      vi.spyOn(Math, 'random').mockReturnValue(0.99);
+      expect(director.shouldShowDialogue('rapidTap', DEFAULT_SETTINGS, 0)).toBe(true);
+      expect(director.shouldShowDialogue('tap', DEFAULT_SETTINGS, 1)).toBe(false);
+      vi.restoreAllMocks();
     });
   });
 

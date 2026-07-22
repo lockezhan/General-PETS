@@ -23,6 +23,13 @@ export class ActionDirector {
   }
 
   public requestAction(request: PetActionRequest): boolean {
+    if (request.animation === "idle" && request.priority === "system" && request.loop !== false) {
+      if (import.meta.env.DEV) {
+        console.error("[action-director] invalid-system-idle-loop", request);
+      }
+      return false;
+    }
+
     const currentPriority = this.currentRequest ? PRIORITY_LEVELS[this.currentRequest.priority] : 0;
     const requestPriority = PRIORITY_LEVELS[request.priority];
 
@@ -44,7 +51,7 @@ export class ActionDirector {
     // 2. 优先级判定：请求优先级必须大于等于当前动作
     if (requestPriority < currentPriority) {
       console.log(
-        `[action-director] request rejected: req=${request.id}(${request.priority}) < current=${this.currentRequest?.id}(${this.currentRequest?.priority})`
+        `[action-director] request rejected: req=${request.id}(${request.priority}) < current=${this.currentRequest?.id}(${this.currentRequest?.priority}) blockedBy=${this.currentRequest?.id}`
       );
       return false;
     }
@@ -66,7 +73,7 @@ export class ActionDirector {
 
     this.player.play(request.animation, {
       loop: shouldLoop,
-      fallback: request.fallback ?? "idle",
+      fallback: request.fallback,
       timingOverride: request.timingOverride,
       onComplete: (_nextState) => {
         // Token 保护：确保旧的回调不会影响后来发布的新 Action
@@ -79,11 +86,15 @@ export class ActionDirector {
             if (request.onComplete) {
               request.onComplete();
             }
+            // An explicit completion handler may have entered a new action
+            // (for example landing -> idle). Never enqueue a stale fallback
+            // after that transition.
+            if (this.activeToken !== newToken) return;
             if (request.fallback && request.fallback !== request.animation) {
               this.requestAction({
                 id: `fallback-${request.id}`,
                 animation: request.fallback,
-                priority: request.priority === "system" ? "system" : "ambient",
+                priority: "ambient",
                 source: "behavior"
               });
             }
@@ -107,6 +118,12 @@ export class ActionDirector {
 
   public getActiveToken(): number {
     return this.activeToken;
+  }
+
+  public getCurrentActionLabel(): string | null {
+    return this.currentRequest
+      ? `${this.currentRequest.id}(${this.currentRequest.priority})`
+      : null;
   }
 
   public clearCurrentAction(reason: string) {

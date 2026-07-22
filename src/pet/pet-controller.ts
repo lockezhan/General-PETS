@@ -8,7 +8,7 @@ import { PetState, CharacterManifest, DEFAULT_MOTION_CONFIG, MotionConfig } from
 import { PetSettings } from '../shared/pet-settings';
 import { DEFAULT_SETTINGS } from '../shared/defaults';
 import { EVENT_SETTINGS_CHANGED, EVENT_RESET_POSITION, EVENT_TEST_WALK, EVENT_TEST_FALL } from '../shared/event-names';
-import { currentMonitor, primaryMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { currentMonitor, primaryMonitor, availableMonitors, getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
@@ -19,7 +19,7 @@ import { PetStateMachine } from './pet-state-machine';
 import { FacingController } from './facing-controller';
 import { FloorController } from './floor-controller';
 import { MotionController, MotionProgress } from './motion-controller';
-import { InteractionManifest } from './interaction/interaction-types';
+import { InteractionManifest, InteractionExecutionContext } from './interaction/interaction-types';
 import { validateInteractions } from './character-validator';
 import { DEFAULT_CODEX_HIT_AREAS, BehaviorContext } from './natural/natural-types';
 import { getDialogueDurationMs } from './natural/dialogue-director';
@@ -84,6 +84,7 @@ export class PetController {
   private manualDragController: ManualWindowDragController;
   private settings: PetSettings = { ...DEFAULT_SETTINGS };
   private dialogues: any = null;
+  private defaultDialogues: any = null;
   private interactionManifest: InteractionManifest | null = null;
 
   private isDraggingWindow = false;
@@ -148,8 +149,8 @@ export class PetController {
     );
 
     const interactionCallbacks: InteractionControllerCallbacks = {
-      playAnimation: (animName, fallback) => {
-        this.playCustomAnimation(animName, fallback);
+      playAnimation: (animName, fallback, context) => {
+        return this.playCustomAnimation(animName, fallback, context);
       },
       showDialogue: (text) => {
         this.showBubble(text);
@@ -170,6 +171,7 @@ export class PetController {
       getCurrentState: () => {
         return this.stateMachine.getState();
       },
+      getCurrentAction: () => this.actionDirector?.getCurrentActionLabel() ?? null,
       getFacing: () => {
         return this.facingController.getFacing();
       },
@@ -245,13 +247,7 @@ export class PetController {
 
     listen(EVENT_TEST_FALL, async () => {
       console.log("[pet-controller] received EVENT_TEST_FALL");
-      this.cancelActiveLocomotion("test-fall");
-      const floorInfo = await this.floorController.getCurrentFloorInfo();
-      if (floorInfo && this.trySetState('falling')) {
-        this.motionController.startFall(floorInfo, this.settings, () => {
-          this.trySetState('landing');
-        });
-      }
+      await this.startIntentionalFall("test-fall");
     });
 
     window.addEventListener('contextmenu', (e) => {
@@ -391,6 +387,16 @@ export class PetController {
   }
 
   private async loadDialogues(_characterId: string) {
+    this.defaultDialogues = null;
+    try {
+      const defaultRes = await fetch('/characters/default/dialogues.json');
+      if (defaultRes.ok) {
+        this.defaultDialogues = await defaultRes.json();
+      }
+    } catch (e) {
+      console.warn('Failed to load default dialogues:', e);
+    }
+
     try {
       const source = this.loader.getCharacterSource();
       if (source && source.kind === 'installed') {
@@ -405,14 +411,7 @@ export class PetController {
       console.warn("Failed to load custom dialogues, falling back to default:", e);
     }
 
-    try {
-      const res = await fetch(`/characters/default/dialogues.json`);
-      if (res.ok) {
-        this.dialogues = await res.json();
-      }
-    } catch (e) {
-      console.error("Failed to load default dialogues", e);
-    }
+    this.dialogues = this.defaultDialogues;
   }
 
   private async loadInteractions(characterId: string) {
@@ -541,20 +540,30 @@ export class PetController {
         animation: anim,
         priority: 'ambient',
         source: 'behavior',
-        fallback: 'idle'
+        fallback: 'idle',
+        onComplete: () => {
+          if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
+            this.requestIdleVisual(`behavior ${anim} completed`);
+          }
+        }
       });
     }
 
     this.startIdleTimers();
   }
 
-  public playCustomAnimation(animName: string, fallback: string = 'idle') {
+  public playCustomAnimation(
+    animName: string,
+    fallback: string = 'idle',
+    _context?: InteractionExecutionContext
+  ): boolean {
     this.behaviorPlanner.recordUserInteraction();
     this.cancelActiveLocomotion("user animation request");
     this.visualCoordinator.setReactionState(animName as any, "user");
 
     const isLongPressReview = animName === 'review';
-    this.actionDirector.requestAction({
+    const stateBefore = this.stateMachine.getState();
+    const accepted = this.actionDirector.requestAction({
       id: isLongPressReview
         ? `longpress-review-${Date.now()}`
         : `custom-${animName}-${Date.now()}`,
@@ -564,7 +573,12 @@ export class PetController {
       fallback: isLongPressReview ? 'idle' : fallback,
       interruptPolicy: isLongPressReview ? 'immediate' : 'extend-same',
       loop: isLongPressReview ? false : undefined,
-      holdAfterMs: isLongPressReview ? 300 : undefined
+      holdAfterMs: isLongPressReview ? 300 : undefined,
+      onComplete: () => {
+        if (!this.isDraggingWindow && this.stateMachine.getState() !== 'falling' && this.stateMachine.getState() !== 'landing') {
+          this.requestIdleVisual(`animation ${animName} completed`);
+        }
+      }
     });
 
     if (isLongPressReview && import.meta.env.DEV) {
@@ -579,9 +593,21 @@ export class PetController {
         `fallback=idle`
       );
     }
+    if (import.meta.env.DEV) {
+      console.info(`[interaction-action] event=${_context?.event ?? 'direct'} requested=${animName} accepted=${accepted} stateBefore=${stateBefore} currentPriority=${this.actionDirector.getCurrentActionLabel() ?? 'none'}`);
+    }
+    return accepted;
   }
 
   private playStateAnimation(state: PetState) {
+    if (state === 'idle') {
+      this.requestIdleVisual('state transition');
+      return;
+    }
+    if (state === 'landing') {
+      this.enterLandingAfterFall();
+      return;
+    }
     const isSystemState = state === 'falling' || state === 'landing';
     const isLocomotionState = state === 'walk' || state === 'dragged';
     const priority = isSystemState ? 'system' : (isLocomotionState ? 'locomotion' : 'ambient');
@@ -592,8 +618,6 @@ export class PetController {
       this.visualCoordinator.setMotionState('drag-static');
     } else if (state === 'falling') {
       this.visualCoordinator.setMotionState('falling');
-    } else if (state === 'landing') {
-      this.visualCoordinator.setMotionState('landing');
     } else if (state === 'idle') {
       this.visualCoordinator.setMotionState('idle');
       this.visualCoordinator.setReactionState('idle', 'ambient');
@@ -604,12 +628,65 @@ export class PetController {
       animation: state === 'sit' ? 'waiting' : (state === 'dragged' ? 'waiting' : state),
       priority,
       source: 'system',
-      fallback: 'idle'
+      fallback: undefined,
+      loop: state === 'falling'
     });
+  }
 
-    if (state === 'idle') {
-      this.startIdleTimers();
+  private requestIdleVisual(reason: string): void {
+    this.actionDirector.clearCurrentAction(`enter idle: ${reason}`);
+    this.visualCoordinator.clearMotionState(reason);
+    this.visualCoordinator.setReactionState('idle', 'ambient');
+    this.stateMachine.forceState('idle');
+    this.actionDirector.requestAction({
+      id: `idle-${Date.now()}`,
+      animation: 'idle',
+      priority: 'ambient',
+      source: 'behavior',
+      loop: true
+    });
+    this.startIdleTimers();
+  }
+
+  private enterLandingAfterFall(): void {
+    this.stateMachine.forceState('landing');
+    this.visualCoordinator.setMotionState('landing');
+    this.actionDirector.clearCurrentAction('fall completed');
+
+    if (!this.player.hasAnimation('landing')) {
+      this.requestIdleVisual('landing animation unavailable');
+      return;
     }
+
+    this.actionDirector.requestAction({
+      id: `landing-${Date.now()}`,
+      animation: 'landing',
+      priority: 'system',
+      source: 'system',
+      loop: false,
+      onComplete: () => {
+        this.requestIdleVisual('landing completed');
+      }
+    });
+  }
+
+  private async startIntentionalFall(reason: string): Promise<void> {
+    this.cancelActiveLocomotion(reason);
+    this.actionDirector.clearCurrentAction(reason);
+    const floorInfo = await this.floorController.getCurrentFloorInfo();
+    if (!floorInfo) return;
+    this.stateMachine.forceState('falling');
+    this.visualCoordinator.setMotionState('falling');
+    this.actionDirector.requestAction({
+      id: `falling-${Date.now()}`,
+      animation: 'falling',
+      priority: 'system',
+      source: 'system',
+      loop: true
+    });
+    await this.motionController.startFall(floorInfo, this.settings, () => {
+      this.enterLandingAfterFall();
+    });
   }
 
   private cancelActiveLocomotion(reason: string) {
@@ -846,64 +923,59 @@ export class PetController {
     const summary: ManualDragSummary = await this.manualDragController.end(reason);
     this.player.endDistanceDriven();
 
-    const floorInfo = await this.floorController.getCurrentFloorInfo();
-    if (!floorInfo) {
-      this.trySetState('idle');
-      return;
-    }
-
-    const intentionallyLifted =
-      summary.maximumUpwardLiftLogical >= 16 ||
-      (summary.predominantlyVertical && summary.totalLogicalY <= -12);
-    const willFall =
-      intentionallyLifted &&
-      this.settings.gravityEnabled &&
-      summary.endPhysicalY < floorInfo.floorWindowY - 3;
-
     if (import.meta.env.DEV) {
       console.info(
         `[manual-drag]\n` +
         `session=${sessionId}\n` +
         `phase=end\n` +
         `reason=${reason}\n` +
-        `lift=${summary.maximumUpwardLiftLogical.toFixed(1)}\n` +
-        `vertical=${summary.predominantlyVertical}\n` +
-        `willFall=${willFall}`
+          `endPhysical=${summary.endPhysicalX},${summary.endPhysicalY}\n` +
+          `lift=${summary.maximumUpwardLiftLogical.toFixed(1)}\n` +
+          `vertical=${summary.predominantlyVertical}\n` +
+          `willFall=false`
       );
     }
 
-    if (willFall) {
-      if (this.trySetState('falling')) {
-        this.motionController.startFall(floorInfo, this.settings, () => {
-          this.trySetState('landing');
-        });
-      } else {
-        this.trySetState('idle');
-      }
-    } else {
-      await getCurrentWindow().setPosition(
-        new PhysicalPosition(summary.endPhysicalX, floorInfo.floorWindowY)
-      );
-      if (!this.trySetState('landing')) {
-        this.trySetState('idle');
-      }
-    }
+    // ManualWindowDragController.end() has already flushed the final
+    // physical position. A normal drag is a free placement operation: keep
+    // both X and Y and never reinterpret the gesture as gravity.
+    this.actionDirector.clearCurrentAction('manual drag ended');
+    this.visualCoordinator.clearMotionState('manual drag placed freely');
+    this.stateMachine.forceState('idle');
+    this.requestIdleVisual('manual drag placed freely');
   }
 
   public showBubble(text: string) {
-    const bubbleText = this.bubble.querySelector('.speech-bubble__text');
-    if (bubbleText) {
-      bubbleText.textContent = text;
-    } else {
-      this.bubble.textContent = text;
+    const cleanText = text.trim();
+    if (!cleanText) return;
+    if (this.bubbleTimer !== null) {
+      clearTimeout(this.bubbleTimer);
+      this.bubbleTimer = null;
     }
-    
+
+    let bubbleText = this.bubble.querySelector<HTMLElement>('.speech-bubble__text');
+    if (!bubbleText) {
+      bubbleText = document.createElement('div');
+      bubbleText.className = 'speech-bubble__text';
+      this.bubble.appendChild(bubbleText);
+    }
+    bubbleText.textContent = cleanText;
+    this.bubble.style.pointerEvents = 'none';
     this.bubble.classList.add('is-visible');
-    
-    if (this.bubbleTimer) clearTimeout(this.bubbleTimer);
-    const durationMs = getDialogueDurationMs(text);
+
+    const durationMs = getDialogueDurationMs(cleanText);
+    if (import.meta.env.DEV) {
+      requestAnimationFrame(() => {
+        const styles = getComputedStyle(this.bubble);
+        console.info(
+          `[bubble] textLength=${cleanText.length} visibleClass=${this.bubble.classList.contains('is-visible')} ` +
+          `opacity=${styles.opacity} visibility=${styles.visibility} durationMs=${durationMs}`
+        );
+      });
+    }
     this.bubbleTimer = window.setTimeout(() => {
       this.bubble.classList.remove('is-visible');
+      this.bubbleTimer = null;
     }, durationMs);
   }
 
@@ -960,13 +1032,43 @@ export class PetController {
   }
 
   private getRandomDialogueFromGroup(group: string): string | null {
-    if (!this.dialogues || !this.dialogues[group] || !Array.isArray(this.dialogues[group])) {
-      return null;
+    const builtin: Record<string, string> = {
+      singleClick: '你好呀！',
+      doubleClick: '又见面啦！',
+      rapidClick: '不要一直戳我！',
+      longPress: '我知道你还没松手。'
+    };
+    const sources: Array<{ name: 'character' | 'default' | 'builtin'; data: any }> = [
+      { name: 'character', data: this.dialogues },
+      { name: 'default', data: this.defaultDialogues }
+    ];
+    let text: string | null = null;
+    let source: 'character' | 'default' | 'builtin' = 'builtin';
+    for (const candidate of sources) {
+      const list = candidate.data?.[group];
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const item = list[Math.floor(Math.random() * list.length)];
+      text = typeof item === 'string' ? item : item?.text;
+      if (text) {
+        source = candidate.name;
+        break;
+      }
     }
-    const list = this.dialogues[group];
-    if (list.length === 0) return null;
-    const item = list[Math.floor(Math.random() * list.length)];
-    return typeof item === 'string' ? item : item.text;
+    const fallbackGroup = !text
+      ? (group.includes('singleClick') ? 'singleClick'
+        : group.includes('doubleClick') ? 'doubleClick'
+        : group.includes('rapidClick') ? 'rapidClick'
+        : group.includes('longPress') ? 'longPress'
+        : null)
+      : null;
+    if (!text && fallbackGroup && builtin[fallbackGroup]) {
+      text = builtin[fallbackGroup];
+      source = 'builtin';
+    }
+    if (import.meta.env.DEV) {
+      console.info(`[dialogue] event=${group} group=${group} source=${source} textFound=${Boolean(text)}`);
+    }
+    return text;
   }
 
   private async checkInitialPosition() {
@@ -977,13 +1079,7 @@ export class PetController {
       return;
     }
 
-    const floorInfo = await this.floorController.getCurrentFloorInfo();
-    if (!floorInfo) return;
-    const appWindow = getCurrentWindow();
-    const pos = await appWindow.outerPosition();
-    if (pos.y !== floorInfo.floorWindowY) {
-      await appWindow.setPosition(new PhysicalPosition(pos.x, floorInfo.floorWindowY));
-    }
+    await this.clampPetWindowToVisibleArea();
   }
 
   private async movePetToDefaultPosition() {
@@ -1070,6 +1166,20 @@ export class PetController {
       const appWindow = getCurrentWindow();
       const currentPosition = await appWindow.outerPosition();
       const windowSize = await appWindow.outerSize();
+      const monitors = await availableMonitors();
+      const intersectsMonitor = monitors.some((monitor) => {
+        const left = monitor.workArea.position.x;
+        const top = monitor.workArea.position.y;
+        const right = left + monitor.workArea.size.width;
+        const bottom = top + monitor.workArea.size.height;
+        return currentPosition.x < right && currentPosition.x + windowSize.width > left &&
+          currentPosition.y < bottom && currentPosition.y + windowSize.height > top;
+      });
+      if (!intersectsMonitor && monitors.length > 0) {
+        await this.movePetToDefaultPosition();
+        return;
+      }
+
       const monitor = await currentMonitor() ?? await primaryMonitor();
       if (!monitor) return;
 

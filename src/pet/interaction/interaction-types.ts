@@ -8,6 +8,12 @@ export type InteractionEventType =
   | "dragStart"
   | "dragEnd";
 
+export interface InteractionExecutionContext {
+  event: "singleClick" | "doubleClick" | "rapidClick" | "longPress" | "stroke";
+  areaId: string | null;
+  dialogueGroup?: string;
+}
+
 export interface HitAreaBase {
   id: string;
   name?: string;
